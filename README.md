@@ -1,4 +1,5 @@
-TaskAgent acts as an assistant PM, keeping coding agents busy and productive. It has two core responsibilities:
+TaskAgent inverts the human-agent relationship: instead of humans directing coding agents, coding agents request human input when needed.
+It acts as an assistant PM, keeping coding agents busy and productive. It has two core responsibilities:
 
 1. **Ticket Refinement** — Proactively improves tickets by asking clarifying questions, filling in implementation details, and ensuring work specifications match end-user intent.
 2. **Coding Agent Orchestration** — Assigns work to coding agents, monitors progress, and manages their lifecycle.
