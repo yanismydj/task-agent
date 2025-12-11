@@ -205,6 +205,16 @@ export class LinearTicketQueue {
       const newRetryCount = row.retry_count + 1;
 
       if (newRetryCount < row.max_retries) {
+        // Before setting this task back to pending, cancel any duplicate pending tasks
+        // that may have been created by the scheduler while this task was processing.
+        // This prevents UNIQUE constraint violations on (ticket_id, task_type, status).
+        db.prepare(`
+          UPDATE linear_ticket_queue
+          SET status = 'cancelled',
+              updated_at = datetime('now')
+          WHERE ticket_id = ? AND task_type = ? AND status = 'pending' AND id != ?
+        `).run(row.ticket_id, row.task_type, id);
+
         // Requeue for retry
         db.prepare(`
           UPDATE linear_ticket_queue
