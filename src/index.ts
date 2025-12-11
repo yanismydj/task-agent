@@ -76,6 +76,13 @@ async function main() {
     await workflowEngine.processTickets(tickets);
   });
 
+  // Set up rate limit handler to show UI warning
+  poller.setRateLimitHandler((resetAt) => {
+    if (isInteractiveMode) {
+      terminalUI.setRateLimitStatus(resetAt);
+    }
+  });
+
   poller.start();
 
   logger.info('Daemon running, polling for tickets');

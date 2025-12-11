@@ -6,11 +6,22 @@ import type { TicketInfo, TicketComment, TicketUpdate } from './types.js';
 
 const logger = createChildLogger({ module: 'linear-client' });
 
+export class RateLimitError extends Error {
+  constructor(
+    public readonly resetAt: Date,
+    message?: string
+  ) {
+    super(message || `Rate limited until ${resetAt.toLocaleTimeString()}`);
+    this.name = 'RateLimitError';
+  }
+}
+
 export class LinearApiClient {
   private client: LinearClient | null = null;
   private teamId: string;
   private projectId?: string;
   private useOAuth: boolean;
+  private rateLimitResetAt: Date | null = null;
 
   constructor() {
     this.teamId = config.linear.teamId;
@@ -43,12 +54,65 @@ export class LinearApiClient {
     return this.client;
   }
 
+  /**
+   * Check if we're currently rate limited
+   */
+  isRateLimited(): boolean {
+    if (!this.rateLimitResetAt) return false;
+    return new Date() < this.rateLimitResetAt;
+  }
+
+  /**
+   * Get the time when rate limit resets (null if not rate limited)
+   */
+  getRateLimitResetAt(): Date | null {
+    if (!this.isRateLimited()) {
+      this.rateLimitResetAt = null;
+      return null;
+    }
+    return this.rateLimitResetAt;
+  }
+
+  /**
+   * Check if an error is a rate limit error and extract reset time
+   */
+  private extractRateLimitInfo(error: unknown): Date | null {
+    if (!(error instanceof Error)) return null;
+
+    const errorStr = String(error);
+
+    // Check for rate limit error
+    if (!errorStr.includes('Rate limit exceeded') && !errorStr.includes('RATELIMITED')) {
+      return null;
+    }
+
+    // Linear rate limit is 1 hour (3600000ms)
+    // Set reset time to 1 hour from now
+    return new Date(Date.now() + 3600000);
+  }
+
   // Wrap API calls to handle 401 errors and refresh token
   private async withRetry<T>(operation: (client: LinearClient) => Promise<T>): Promise<T> {
+    // Check if we're rate limited before making the call
+    if (this.isRateLimited()) {
+      throw new RateLimitError(this.rateLimitResetAt!);
+    }
+
     const client = await this.getClient();
     try {
       return await operation(client);
     } catch (error) {
+      // Check if it's a rate limit error
+      const resetAt = this.extractRateLimitInfo(error);
+      if (resetAt) {
+        this.rateLimitResetAt = resetAt;
+        logger.warn(
+          { resetAt: resetAt.toLocaleTimeString() },
+          'Linear rate limit hit'
+        );
+        throw new RateLimitError(resetAt);
+      }
+
       // Check if it's a 401 error and we're using OAuth
       if (this.useOAuth && error instanceof Error && error.message.includes('401')) {
         logger.info('Got 401, refreshing OAuth token');

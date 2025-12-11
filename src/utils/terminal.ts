@@ -68,6 +68,7 @@ class TerminalUI {
   private refreshInterval: ReturnType<typeof setInterval> | null = null;
   private lastRender = '';
   private startTime = new Date();
+  private rateLimitResetAt: Date | null = null;
 
   start(): void {
     // Clear screen and hide cursor
@@ -106,6 +107,10 @@ class TerminalUI {
     }
   }
 
+  setRateLimitStatus(resetAt: Date | null): void {
+    this.rateLimitResetAt = resetAt;
+  }
+
   private render(): void {
     const output = this.buildOutput();
 
@@ -121,6 +126,13 @@ class TerminalUI {
   private buildOutput(): string {
     const lines: string[] = [];
 
+    // Rate limit warning banner (if active)
+    const rateLimitBanner = this.buildRateLimitBanner();
+    if (rateLimitBanner) {
+      lines.push(rateLimitBanner);
+      lines.push('');
+    }
+
     // Agent status section
     lines.push(this.buildAgentSection());
     lines.push('');
@@ -133,6 +145,24 @@ class TerminalUI {
     lines.push(this.buildStatusBar());
 
     return lines.join('\n');
+  }
+
+  private buildRateLimitBanner(): string | null {
+    if (!this.rateLimitResetAt) return null;
+
+    const now = new Date();
+    if (now >= this.rateLimitResetAt) {
+      this.rateLimitResetAt = null;
+      return null;
+    }
+
+    const resetTime = this.rateLimitResetAt.toLocaleTimeString('en-US', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    return `${c.bgYellow}${c.black}${c.bold}  ⚠  Linear rate limit hit - paused until ${resetTime}  ${c.reset}`;
   }
 
   private buildAgentSection(): string {
