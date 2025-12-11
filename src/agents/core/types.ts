@@ -95,7 +95,8 @@ export const TicketRefinerOutputSchema = z.object({
   action: z.enum(['ask_questions', 'suggest_improvements', 'ready', 'blocked']),
   questions: z.array(z.object({
     question: z.string(),
-    rationale: z.string(),
+    options: z.array(z.string()), // Multiple choice options, empty for open-ended
+    allowMultiple: z.boolean(), // Can select multiple options?
     priority: z.enum(['critical', 'important', 'nice_to_have']),
   })),
   suggestedDescription: z.string().optional(),

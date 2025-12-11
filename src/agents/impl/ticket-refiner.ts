@@ -11,23 +11,33 @@ import {
 
 const REFINER_SYSTEM_PROMPT = `You are a technical project manager helping prepare tickets for coding agents.
 
-Your goal is to ask clarifying questions that will help a coding agent successfully implement the ticket. Focus on:
+Your goal is to ask clarifying questions that will help a coding agent successfully implement the ticket.
 
-1. **Acceptance Criteria**: What exactly should the implementation achieve?
-2. **Scope Boundaries**: What is explicitly in/out of scope?
-3. **Technical Context**: Which files, components, or patterns should be used?
-4. **Edge Cases**: What error scenarios or special cases should be handled?
-5. **Testing**: How should the implementation be verified?
+**IMPORTANT: Format questions as multiple choice with checkbox options whenever possible.**
+This makes it easy for users to quickly respond by checking boxes rather than typing long answers.
 
-Guidelines for questions:
-- Be specific and actionable
-- Don't ask about things already answered in the description
-- Focus on information the coding agent needs to succeed
-- Prioritize questions as 'critical' (must have), 'important' (should have), or 'nice_to_have'
-- Suggest improvements to the ticket description if appropriate
+Good question format (multiple choice):
+- "Which error handling approach should be used?"
+  Options: ["Return null on failure", "Throw exception", "Return Result type", "Log and continue"]
 
-If the ticket is already well-specified despite a low readiness score, recommend action 'ready'.
-If there are external blockers (dependencies, missing access), recommend action 'blocked'.`;
+Bad question format (open-ended):
+- "How should errors be handled?" (too vague, requires typing)
+
+Focus areas:
+1. **Scope**: What's in/out of scope? (provide options)
+2. **Approach**: Which pattern or library to use? (provide options)
+3. **Edge Cases**: Which scenarios to handle? (provide checklist)
+4. **Testing**: What test coverage is needed? (provide options)
+
+Guidelines:
+- Provide 2-5 options per question when possible
+- Options should be mutually exclusive OR allow multiple selection
+- Keep questions short and specific
+- Only ask open-ended questions when options aren't feasible
+- Prioritize: 'critical' (blocking), 'important' (should clarify), 'nice_to_have'
+
+If the ticket is already well-specified, recommend action 'ready'.
+If there are external blockers, recommend action 'blocked'.`;
 
 const REFINER_SCHEMA = {
   type: 'object',
@@ -44,11 +54,16 @@ const REFINER_SCHEMA = {
         properties: {
           question: {
             type: 'string',
-            description: 'The clarifying question to ask',
+            description: 'The clarifying question to ask (keep short)',
           },
-          rationale: {
-            type: 'string',
-            description: 'Why this question is important for the coding agent',
+          options: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Multiple choice options (2-5 items). Empty array for open-ended questions.',
+          },
+          allowMultiple: {
+            type: 'boolean',
+            description: 'If true, user can select multiple options. If false, single choice only.',
           },
           priority: {
             type: 'string',
@@ -56,7 +71,7 @@ const REFINER_SCHEMA = {
             description: 'How important is this question',
           },
         },
-        required: ['question', 'rationale', 'priority'],
+        required: ['question', 'options', 'allowMultiple', 'priority'],
         additionalProperties: false,
       },
       description: 'List of clarifying questions to ask',
@@ -230,6 +245,7 @@ Focus on remaining gaps and unanswered questions.`;
   /**
    * Format questions as individual comments for Linear
    * Returns an array of comment strings, one per question
+   * Multiple choice questions are formatted with checkboxes
    */
   formatQuestionsAsComments(output: TicketRefinerOutput, mentionPrefix?: string): string[] {
     if (output.action === 'ready') {
@@ -255,7 +271,19 @@ Focus on remaining gaps and unanswered questions.`;
 
     for (const q of topQuestions) {
       const priorityLabel = q.priority === 'critical' ? '❗' : q.priority === 'important' ? '❓' : '💭';
-      comments.push(`${mention}**[TaskAgent]** ${priorityLabel} ${q.question}`);
+
+      if (q.options && q.options.length > 0) {
+        // Multiple choice question with checkboxes
+        const selectHint = q.allowMultiple ? '(select all that apply)' : '(select one)';
+        let comment = `${mention}**[TaskAgent]** ${priorityLabel} ${q.question} ${selectHint}\n`;
+        for (const option of q.options) {
+          comment += `- [ ] ${option}\n`;
+        }
+        comments.push(comment.trim());
+      } else {
+        // Open-ended question
+        comments.push(`${mention}**[TaskAgent]** ${priorityLabel} ${q.question}`);
+      }
     }
 
     return comments;
