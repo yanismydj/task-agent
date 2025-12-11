@@ -6,9 +6,9 @@ import type { Agent, AgentConfig, AgentInput, AgentOutput, ModelTier } from './t
 import { AgentError, AgentTimeoutError } from './errors.js';
 
 const MODEL_MAP: Record<ModelTier, string> = {
-  fast: 'claude-haiku-4-5-20251001',
-  standard: 'claude-sonnet-4-5-20250514',
-  advanced: 'claude-opus-4-5-20251101',
+  fast: 'claude-3-5-haiku-20241022',
+  standard: 'claude-sonnet-4-20250514',
+  advanced: 'claude-opus-4-20250514',
 };
 
 export abstract class BaseAgent<TInput, TOutput> implements Agent<TInput, TOutput> {

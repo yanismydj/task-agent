@@ -20,7 +20,7 @@ export const VALID_TRANSITIONS: Record<TicketWorkflowState, TicketWorkflowState[
   new: ['evaluating'],
   evaluating: ['needs_refinement', 'ready_for_approval', 'blocked'],
   needs_refinement: ['refining'],
-  refining: ['awaiting_response', 'ready_for_approval'],
+  refining: ['awaiting_response', 'ready_for_approval', 'evaluating'],
   awaiting_response: ['evaluating'], // Re-evaluate after human response
   ready_for_approval: ['approved', 'needs_refinement'],
   approved: ['generating_prompt'],
