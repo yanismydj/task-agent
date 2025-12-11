@@ -65,7 +65,7 @@ export class AgentPool {
     return Array.from(this.agents.values()).map((a) => a.getState());
   }
 
-  getTerminalState(): { agents: Array<{ id: string; ticketIdentifier: string; status: string; startedAt: Date }>; available: number; total: number } {
+  getTerminalState(): { agents: Array<{ id: string; ticketIdentifier: string; status: string; startedAt: Date; recentOutput: string[] }>; available: number; total: number } {
     const activeAgents = this.getActiveAgents().map((a) => {
       const state = a.getState();
       return {
@@ -73,6 +73,7 @@ export class AgentPool {
         ticketIdentifier: state.ticketIdentifier || 'Unknown',
         status: state.status,
         startedAt: state.startedAt || new Date(),
+        recentOutput: a.getRecentOutput(3),
       };
     });
 

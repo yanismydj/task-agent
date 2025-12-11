@@ -51,6 +51,7 @@ interface AgentInfo {
   ticketIdentifier: string;
   status: string;
   startedAt: Date;
+  recentOutput: string[];
 }
 
 // Agent state getter - will be set by the pool
@@ -146,7 +147,7 @@ class TerminalUI {
     if (agents.length === 0) {
       lines.push(`  ${c.dim}No active agents${c.reset}  ${c.green}●${c.reset} ${available}/${total} available`);
     } else {
-      // Show active agents
+      // Show active agents with their recent output
       for (const agent of agents) {
         const runtime = this.formatDuration(Date.now() - agent.startedAt.getTime());
         const statusIcon = this.getStatusIcon(agent.status);
@@ -156,6 +157,17 @@ class TerminalUI {
           `  ${statusIcon} ${c.bold}${ticket}${c.reset} ${c.dim}│${c.reset} ` +
           `${c.cyan}${agent.status}${c.reset} ${c.dim}│${c.reset} ${runtime}`
         );
+
+        // Show recent Claude Code output (indented)
+        if (agent.recentOutput.length > 0) {
+          for (const outputLine of agent.recentOutput) {
+            const truncated = outputLine.length > 70 ? outputLine.slice(0, 67) + '...' : outputLine;
+            lines.push(`     ${c.dim}│${c.reset} ${c.white}${truncated}${c.reset}`);
+          }
+        } else {
+          lines.push(`     ${c.dim}│ Waiting for output...${c.reset}`);
+        }
+        lines.push('');
       }
 
       lines.push(THIN_DIVIDER);

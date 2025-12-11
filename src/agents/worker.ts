@@ -51,6 +51,12 @@ export class AgentWorker {
     return { ...this.state };
   }
 
+  getRecentOutput(lines: number = 3): string[] {
+    if (!this.output) return [];
+    const allLines = this.output.split('\n').filter((line) => line.trim());
+    return allLines.slice(-lines);
+  }
+
   assign(assignment: WorkAssignment, worktreePath: string, branchName: string): void {
     this.state.status = 'assigned';
     this.state.ticketId = assignment.ticketId;
