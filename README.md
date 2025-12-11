@@ -4,6 +4,8 @@ It acts as an assistant PM, keeping coding agents busy and productive. It has tw
 1. **Ticket Refinement** — Proactively improves tickets by asking clarifying questions, filling in implementation details, and ensuring work specifications match end-user intent.
 2. **Coding Agent Orchestration** — Assigns work to coding agents, monitors progress, and manages their lifecycle.
 
+<img width="1072" height="617" alt="task-ss" src="https://github.com/user-attachments/assets/e4209f18-ad60-4ecf-bb20-1adc9f771dd4" />
+
 ## Ticket Refinement
 
 TaskAgent regularly scans all tickets to identify those ready for work or needing clarification. It leverages coding agents' planning mode to surface ambiguities and preempt design decisions.
