@@ -37,10 +37,10 @@ const ConfigSchema = z.object({
     maxRetries: z.number().int().min(0).default(2),
     readinessThreshold: z.number().int().min(0).max(100).default(70),
     models: z.object({
-      // Claude 4.x models required for structured outputs beta
+      // Claude 4.5 models required for structured outputs beta
       fast: z.string().default('claude-haiku-4-5-20251001'),
-      standard: z.string().default('claude-sonnet-4-5-20250514'),
-      advanced: z.string().default('claude-opus-4-5-20250514'),
+      standard: z.string().default('claude-sonnet-4-5-20250929'),
+      advanced: z.string().default('claude-opus-4-5-20251101'),
     }),
   }),
   daemon: z.object({
@@ -96,8 +96,8 @@ function loadConfig(): Config {
       readinessThreshold: parseInt(process.env['AGENTS_READINESS_THRESHOLD'] || '70', 10),
       models: {
         fast: process.env['AGENTS_MODEL_FAST'] || 'claude-haiku-4-5-20251001',
-        standard: process.env['AGENTS_MODEL_STANDARD'] || 'claude-sonnet-4-5-20250514',
-        advanced: process.env['AGENTS_MODEL_ADVANCED'] || 'claude-opus-4-5-20250514',
+        standard: process.env['AGENTS_MODEL_STANDARD'] || 'claude-sonnet-4-5-20250929',
+        advanced: process.env['AGENTS_MODEL_ADVANCED'] || 'claude-opus-4-5-20251101',
       },
     },
     daemon: {
