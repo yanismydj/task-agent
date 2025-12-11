@@ -317,6 +317,16 @@ export class WorkflowEngine {
     ticket: TicketInfo,
     previousState: TicketWorkflowState
   ): Promise<ProcessingResult> {
+    // Check if we've hit the max code executors limit
+    const executingCount = codeExecutorAgent.getRunningCount();
+    if (executingCount >= config.agents.maxCodeExecutors) {
+      logger.debug(
+        { ticketId: ticket.identifier, executingCount, max: config.agents.maxCodeExecutors },
+        'Max code executors reached, waiting'
+      );
+      return this.createResult(ticket, previousState, 'approved', 'waiting-for-executor-slot');
+    }
+
     ticketStateMachine.transition(ticket.id, 'generating_prompt', 'Starting prompt generation');
     await this.syncLabel(ticket.id, 'generating_prompt');
     return this.handleGeneratingPrompt(ticket, previousState);
