@@ -37,9 +37,9 @@ const ConfigSchema = z.object({
     maxRetries: z.number().int().min(0).default(2),
     readinessThreshold: z.number().int().min(0).max(100).default(70),
     models: z.object({
-      fast: z.string().default('claude-haiku-4-5-20251001'),
-      standard: z.string().default('claude-sonnet-4-5-20250514'),
-      advanced: z.string().default('claude-opus-4-5-20251101'),
+      fast: z.string().default('claude-3-5-haiku-20241022'),
+      standard: z.string().default('claude-sonnet-4-20250514'),
+      advanced: z.string().default('claude-opus-4-20250514'),
     }),
   }),
   daemon: z.object({
@@ -94,9 +94,9 @@ function loadConfig(): Config {
       maxRetries: parseInt(process.env['AGENTS_MAX_RETRIES'] || '2', 10),
       readinessThreshold: parseInt(process.env['AGENTS_READINESS_THRESHOLD'] || '70', 10),
       models: {
-        fast: process.env['AGENTS_MODEL_FAST'] || 'claude-haiku-4-5-20251001',
-        standard: process.env['AGENTS_MODEL_STANDARD'] || 'claude-sonnet-4-5-20250514',
-        advanced: process.env['AGENTS_MODEL_ADVANCED'] || 'claude-opus-4-5-20251101',
+        fast: process.env['AGENTS_MODEL_FAST'] || 'claude-3-5-haiku-20241022',
+        standard: process.env['AGENTS_MODEL_STANDARD'] || 'claude-sonnet-4-20250514',
+        advanced: process.env['AGENTS_MODEL_ADVANCED'] || 'claude-opus-4-20250514',
       },
     },
     daemon: {
