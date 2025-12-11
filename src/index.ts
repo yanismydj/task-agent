@@ -1,11 +1,10 @@
 import { config } from './config.js';
-import { logger } from './utils/logger.js';
+import { logger, isInteractiveMode } from './utils/logger.js';
+import { terminalUI } from './utils/terminal.js';
 import { poller } from './linear/poller.js';
 import { scheduler } from './orchestrator/scheduler.js';
 import { stateManager } from './linear/state.js';
 import { initializeAuth, getAuth } from './linear/auth.js';
-
-logger.info('TaskAgent starting...');
 
 async function checkOAuthAuthorization(): Promise<void> {
   if (config.linear.auth.mode !== 'oauth') {
@@ -30,13 +29,20 @@ async function main() {
   // Check OAuth authorization first (for OAuth mode)
   await checkOAuthAuthorization();
 
+  // Start terminal UI if in interactive mode
+  if (isInteractiveMode) {
+    terminalUI.start();
+  }
+
+  logger.info('TaskAgent starting...');
+
   // Initialize and register daemon in Linear
   await stateManager.registerDaemon();
 
   logger.info(
     {
       teamId: config.linear.teamId,
-      projectId: config.linear.projectId || '(all projects)',
+      projectId: config.linear.projectId || '(all)',
       maxAgents: config.agents.maxConcurrent,
       pollInterval: `${config.daemon.pollIntervalSeconds}s`,
       authMode: config.linear.auth.mode,
@@ -50,11 +56,16 @@ async function main() {
   }, 60000);
 
   async function shutdown(): Promise<void> {
-    logger.info('Shutting down TaskAgent...');
+    logger.info('Shutting down...');
     clearInterval(heartbeatInterval);
     poller.stop();
     await scheduler.shutdown();
     await stateManager.unregisterDaemon();
+
+    if (isInteractiveMode) {
+      terminalUI.stop();
+    }
+
     process.exit(0);
   }
 
@@ -67,7 +78,7 @@ async function main() {
 
   poller.start();
 
-  logger.info('TaskAgent is running. Press Ctrl+C to stop.');
+  logger.info('Daemon running, polling for tickets');
 }
 
 main().catch(async (error) => {
@@ -82,6 +93,10 @@ main().catch(async (error) => {
     });
   } catch {
     // Ignore if we can't report - Linear might not be initialized
+  }
+
+  if (isInteractiveMode) {
+    terminalUI.stop();
   }
 
   process.exit(1);

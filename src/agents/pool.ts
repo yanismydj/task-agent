@@ -1,5 +1,6 @@
 import { config } from '../config.js';
 import { createChildLogger } from '../utils/logger.js';
+import { setAgentStateGetter } from '../utils/terminal.js';
 import { AgentWorker } from './worker.js';
 import { worktreeManager } from './worktree.js';
 import type { AgentResult, AgentState, WorkAssignment } from './types.js';
@@ -62,6 +63,24 @@ export class AgentPool {
 
   getAllStates(): AgentState[] {
     return Array.from(this.agents.values()).map((a) => a.getState());
+  }
+
+  getTerminalState(): { agents: Array<{ id: string; ticketIdentifier: string; status: string; startedAt: Date }>; available: number; total: number } {
+    const activeAgents = this.getActiveAgents().map((a) => {
+      const state = a.getState();
+      return {
+        id: a.id,
+        ticketIdentifier: state.ticketIdentifier || 'Unknown',
+        status: state.status,
+        startedAt: state.startedAt || new Date(),
+      };
+    });
+
+    return {
+      agents: activeAgents,
+      available: this.getAvailableCount(),
+      total: config.agents.maxConcurrent,
+    };
   }
 
   async assignWork(assignment: WorkAssignment): Promise<AgentWorker | null> {
@@ -189,3 +208,6 @@ export class AgentPool {
 }
 
 export const agentPool = new AgentPool();
+
+// Register the terminal state getter
+setAgentStateGetter(() => agentPool.getTerminalState());
