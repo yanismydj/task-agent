@@ -125,7 +125,17 @@ export class QueueProcessor {
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      logger.error({ error, taskId: task.id }, 'Task processing failed');
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      logger.error(
+        {
+          taskId: task.id,
+          ticketId: task.ticketIdentifier,
+          taskType: task.taskType,
+          error: errorMessage,
+          stack: errorStack,
+        },
+        'Task processing failed'
+      );
       linearQueue.fail(task.id, errorMessage);
       this.callbacks.onError?.(task.ticketId, errorMessage);
     }
@@ -144,7 +154,16 @@ export class QueueProcessor {
       await this.handleExecution(task);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      logger.error({ error, taskId: task.id }, 'Execution processing failed');
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      logger.error(
+        {
+          taskId: task.id,
+          ticketId: task.ticketIdentifier,
+          error: errorMessage,
+          stack: errorStack,
+        },
+        'Execution processing failed'
+      );
       const willRetry = claudeQueue.fail(task.id, errorMessage);
 
       if (!willRetry) {
