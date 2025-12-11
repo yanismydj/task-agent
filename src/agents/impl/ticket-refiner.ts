@@ -57,6 +57,7 @@ const REFINER_SCHEMA = {
           },
         },
         required: ['question', 'rationale', 'priority'],
+        additionalProperties: false,
       },
       description: 'List of clarifying questions to ask',
     },
