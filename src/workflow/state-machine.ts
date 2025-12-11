@@ -29,7 +29,11 @@ export interface TransitionResult {
 export class TicketStateMachine {
   private tickets: Map<string, TicketState> = new Map();
 
-  initializeTicket(ticketId: string, ticketIdentifier: string): TicketState {
+  initializeTicket(
+    ticketId: string,
+    ticketIdentifier: string,
+    initialState: TicketWorkflowState = 'new'
+  ): TicketState {
     if (this.tickets.has(ticketId)) {
       const existing = this.tickets.get(ticketId)!;
       logger.debug({ ticketId: ticketIdentifier }, 'Ticket already initialized');
@@ -39,7 +43,7 @@ export class TicketStateMachine {
     const state: TicketState = {
       ticketId,
       ticketIdentifier,
-      currentState: 'new',
+      currentState: initialState,
       history: [],
       agentOutputs: new Map(),
       createdAt: new Date(),
@@ -48,7 +52,7 @@ export class TicketStateMachine {
     };
 
     this.tickets.set(ticketId, state);
-    logger.info({ ticketId: ticketIdentifier }, 'Ticket state initialized');
+    logger.info({ ticketId: ticketIdentifier, initialState }, 'Ticket state initialized');
 
     return state;
   }

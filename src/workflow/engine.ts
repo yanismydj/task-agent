@@ -98,17 +98,14 @@ export class WorkflowEngine {
       (l) => l.name === 'task-agent' || l.name.startsWith('ta:')
     );
 
-    const state = ticketStateMachine.initializeTicket(ticket.id, ticket.identifier);
+    let initialState: TicketWorkflowState = 'new';
 
     if (hasTaskAgentLabel) {
       const labelName = ticket.labels.find((l) => l.name.startsWith('ta:'))?.name || 'task-agent';
-      const inferredState = this.inferStateFromLabel(labelName);
-      if (inferredState !== 'new') {
-        ticketStateMachine.transition(ticket.id, inferredState, 'Inferred from existing label');
-      }
+      initialState = this.inferStateFromLabel(labelName);
     }
 
-    return state;
+    return ticketStateMachine.initializeTicket(ticket.id, ticket.identifier, initialState);
   }
 
   private inferStateFromLabel(labelName: string): TicketWorkflowState {
