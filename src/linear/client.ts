@@ -1,4 +1,4 @@
-import { LinearClient, Issue, Comment } from '@linear/sdk';
+import { LinearClient, Issue, Comment, RateLimitPayload } from '@linear/sdk';
 import { config } from '../config.js';
 import { createChildLogger } from '../utils/logger.js';
 import { initializeAuth, getAuth } from './auth.js';
@@ -6,9 +6,18 @@ import type { TicketInfo, TicketComment, TicketUpdate, ProjectLead } from './typ
 
 const logger = createChildLogger({ module: 'linear-client' });
 
+export interface RateLimitInfo {
+  requestsRemaining: number;
+  requestsAllowed: number;
+  complexityRemaining: number;
+  complexityAllowed: number;
+  resetAt: Date;
+}
+
 export class RateLimitError extends Error {
   constructor(
     public readonly resetAt: Date,
+    public readonly rateLimitInfo?: RateLimitInfo,
     message?: string
   ) {
     super(message || `Rate limited until ${resetAt.toLocaleTimeString()}`);
@@ -16,12 +25,22 @@ export class RateLimitError extends Error {
   }
 }
 
+// Rate limit constants based on Linear documentation
+// https://linear.app/developers/rate-limiting
+const REQUESTS_PER_HOUR = 1500;
+const COMPLEXITY_PER_HOUR = 250000;
+const BASE_RETRY_DELAY_MS = 1000;
+const MAX_RETRY_DELAY_MS = 60000;
+const MAX_RETRIES = 3;
+
 export class LinearApiClient {
   private client: LinearClient | null = null;
   private teamId: string;
   private projectId?: string;
   private useOAuth: boolean;
   private rateLimitResetAt: Date | null = null;
+  private lastRateLimitInfo: RateLimitInfo | null = null;
+  private consecutiveErrors = 0;
 
   constructor() {
     this.teamId = config.linear.teamId;
@@ -74,56 +93,215 @@ export class LinearApiClient {
   }
 
   /**
+   * Get the last known rate limit info
+   */
+  getRateLimitInfo(): RateLimitInfo | null {
+    return this.lastRateLimitInfo;
+  }
+
+  /**
+   * Query the current rate limit status from Linear API
+   */
+  async queryRateLimitStatus(): Promise<RateLimitInfo | null> {
+    try {
+      const client = await this.getClient();
+      const status: RateLimitPayload = await client.rateLimitStatus;
+      return this.parseRateLimitPayload(status);
+    } catch (error) {
+      logger.warn({ error }, 'Failed to query rate limit status');
+      return null;
+    }
+  }
+
+  /**
+   * Parse RateLimitPayload from SDK into our RateLimitInfo format
+   */
+  private parseRateLimitPayload(payload: RateLimitPayload): RateLimitInfo {
+    let requestsRemaining = REQUESTS_PER_HOUR;
+    let requestsAllowed = REQUESTS_PER_HOUR;
+    let complexityRemaining = COMPLEXITY_PER_HOUR;
+    let complexityAllowed = COMPLEXITY_PER_HOUR;
+    let resetAt = new Date(Date.now() + 3600000); // Default to 1 hour
+
+    for (const limit of payload.limits) {
+      if (limit.type === 'requestLimit') {
+        requestsRemaining = limit.remainingAmount;
+        requestsAllowed = limit.allowedAmount;
+        resetAt = new Date(limit.reset);
+      } else if (limit.type === 'complexityLimit') {
+        complexityRemaining = limit.remainingAmount;
+        complexityAllowed = limit.allowedAmount;
+        // Use earliest reset time
+        const complexityReset = new Date(limit.reset);
+        if (complexityReset < resetAt) {
+          resetAt = complexityReset;
+        }
+      }
+    }
+
+    return {
+      requestsRemaining,
+      requestsAllowed,
+      complexityRemaining,
+      complexityAllowed,
+      resetAt,
+    };
+  }
+
+  /**
    * Check if an error is a rate limit error and extract reset time
    */
-  private extractRateLimitInfo(error: unknown): Date | null {
+  private extractRateLimitFromError(error: unknown): Date | null {
     if (!(error instanceof Error)) return null;
 
     const errorStr = String(error);
 
-    // Check for rate limit error
+    // Check for rate limit error patterns from Linear API
+    // Linear returns errors with code "RATELIMITED"
     if (!errorStr.includes('Rate limit exceeded') && !errorStr.includes('RATELIMITED')) {
       return null;
     }
 
-    // Linear rate limit is 1 hour (3600000ms)
-    // Set reset time to 1 hour from now
-    return new Date(Date.now() + 3600000);
+    // Try to extract reset time from error message
+    // Linear errors may include: "reset in X seconds" or similar
+    const resetMatch = errorStr.match(/reset(?:s)?\s+(?:in\s+)?(\d+)\s*(?:seconds?|s)/i);
+    if (resetMatch && resetMatch[1]) {
+      const seconds = parseInt(resetMatch[1], 10);
+      return new Date(Date.now() + seconds * 1000);
+    }
+
+    // Fallback: Linear rate limit is 1 hour (leaky bucket refills over 1 hour)
+    // But use a shorter backoff (5 minutes) to avoid waiting too long
+    return new Date(Date.now() + 5 * 60 * 1000);
   }
 
-  // Wrap API calls to handle 401 errors and refresh token
+  /**
+   * Calculate exponential backoff delay with jitter
+   * Based on Linear's recommendation for handling rate limits
+   */
+  private calculateBackoffDelay(attempt: number): number {
+    // Exponential backoff: base * 2^attempt
+    const exponentialDelay = BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
+    // Cap at maximum delay
+    const cappedDelay = Math.min(exponentialDelay, MAX_RETRY_DELAY_MS);
+    // Add jitter (±25% randomization) to prevent thundering herd
+    const jitter = cappedDelay * 0.25 * (Math.random() * 2 - 1);
+    return Math.floor(cappedDelay + jitter);
+  }
+
+  /**
+   * Sleep for a given duration
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Wrap API calls with retry logic, rate limit handling, and exponential backoff.
+   * Implements Linear rate limiting best practices:
+   * - Checks rate limit status before making calls
+   * - Retries with exponential backoff + jitter on transient errors
+   * - Properly handles RATELIMITED errors from Linear API
+   * - Refreshes OAuth tokens on 401 errors
+   */
   private async withRetry<T>(operation: (client: LinearClient) => Promise<T>): Promise<T> {
     // Check if we're rate limited before making the call
     if (this.isRateLimited()) {
-      throw new RateLimitError(this.rateLimitResetAt!);
+      throw new RateLimitError(this.rateLimitResetAt!, this.lastRateLimitInfo ?? undefined);
     }
 
-    const client = await this.getClient();
-    try {
-      return await operation(client);
-    } catch (error) {
-      // Check if it's a rate limit error
-      const resetAt = this.extractRateLimitInfo(error);
-      if (resetAt) {
-        this.rateLimitResetAt = resetAt;
-        logger.warn(
-          { resetAt: resetAt.toLocaleTimeString() },
-          'Linear rate limit hit'
-        );
-        throw new RateLimitError(resetAt);
-      }
+    let lastError: Error | null = null;
 
-      // Check if it's a 401 error and we're using OAuth
-      if (this.useOAuth && error instanceof Error && error.message.includes('401')) {
-        logger.info('Got 401, refreshing OAuth token');
-        const auth = getAuth();
-        auth.invalidateToken();
-        this.client = null; // Force client recreation
-        const newClient = await this.getClient();
-        return await operation(newClient);
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const client = await this.getClient();
+        const result = await operation(client);
+
+        // Success - reset consecutive error counter
+        this.consecutiveErrors = 0;
+        return result;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        // Check if it's a rate limit error
+        const resetAt = this.extractRateLimitFromError(error);
+        if (resetAt) {
+          this.rateLimitResetAt = resetAt;
+          this.consecutiveErrors++;
+
+          // Try to get detailed rate limit info
+          const rateLimitInfo = await this.queryRateLimitStatus();
+          if (rateLimitInfo) {
+            this.lastRateLimitInfo = rateLimitInfo;
+            // Use the more accurate reset time from the API
+            this.rateLimitResetAt = rateLimitInfo.resetAt;
+          }
+
+          logger.warn(
+            {
+              resetAt: this.rateLimitResetAt.toLocaleTimeString(),
+              requestsRemaining: rateLimitInfo?.requestsRemaining,
+              complexityRemaining: rateLimitInfo?.complexityRemaining,
+              consecutiveErrors: this.consecutiveErrors,
+            },
+            'Linear rate limit hit'
+          );
+          throw new RateLimitError(this.rateLimitResetAt, this.lastRateLimitInfo ?? undefined);
+        }
+
+        // Check if it's a 401 error and we're using OAuth
+        if (this.useOAuth && lastError.message.includes('401')) {
+          logger.info('Got 401, refreshing OAuth token');
+          const auth = getAuth();
+          auth.invalidateToken();
+          this.client = null; // Force client recreation
+          // Retry immediately after token refresh (don't count as retry attempt)
+          continue;
+        }
+
+        // Check if it's a transient error that should be retried
+        const isTransient = this.isTransientError(lastError);
+
+        if (isTransient && attempt < MAX_RETRIES) {
+          const delay = this.calculateBackoffDelay(attempt);
+          logger.warn(
+            {
+              attempt: attempt + 1,
+              maxRetries: MAX_RETRIES,
+              delayMs: delay,
+              error: lastError.message,
+            },
+            'Transient error, retrying with backoff'
+          );
+          await this.sleep(delay);
+          continue;
+        }
+
+        // Non-transient error or max retries exceeded
+        break;
       }
-      throw error;
     }
+
+    // All retries exhausted
+    this.consecutiveErrors++;
+    throw lastError;
+  }
+
+  /**
+   * Determine if an error is transient and should be retried
+   */
+  private isTransientError(error: Error): boolean {
+    const message = error.message.toLowerCase();
+    return (
+      message.includes('network') ||
+      message.includes('timeout') ||
+      message.includes('econnreset') ||
+      message.includes('econnrefused') ||
+      message.includes('socket hang up') ||
+      message.includes('503') ||
+      message.includes('502') ||
+      message.includes('504')
+    );
   }
 
   async getTickets(): Promise<TicketInfo[]> {

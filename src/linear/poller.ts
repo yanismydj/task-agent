@@ -1,12 +1,12 @@
 import { config } from '../config.js';
 import { createChildLogger } from '../utils/logger.js';
-import { linearClient, RateLimitError } from './client.js';
+import { linearClient, RateLimitError, RateLimitInfo } from './client.js';
 import type { TicketInfo } from './types.js';
 
 const logger = createChildLogger({ module: 'linear-poller' });
 
 export type TicketHandler = (tickets: TicketInfo[]) => Promise<void>;
-export type RateLimitHandler = (resetAt: Date) => void;
+export type RateLimitHandler = (resetAt: Date, info?: RateLimitInfo) => void;
 
 export class LinearPoller {
   private intervalId: NodeJS.Timeout | null = null;
@@ -62,14 +62,22 @@ export class LinearPoller {
     // Check if we're rate limited before even trying
     if (linearClient.isRateLimited()) {
       const resetAt = linearClient.getRateLimitResetAt();
+      const rateLimitInfo = linearClient.getRateLimitInfo();
       if (resetAt) {
         const message = `Linear rate limit hit - paused until ${this.formatResetTime(resetAt)}`;
         // Only log once per rate limit period
         if (this.lastRateLimitMessage !== message) {
           this.lastRateLimitMessage = message;
-          logger.warn({ resetAt: this.formatResetTime(resetAt) }, message);
+          logger.warn(
+            {
+              resetAt: this.formatResetTime(resetAt),
+              requestsRemaining: rateLimitInfo?.requestsRemaining,
+              complexityRemaining: rateLimitInfo?.complexityRemaining,
+            },
+            message
+          );
           if (this.rateLimitHandler) {
-            this.rateLimitHandler(resetAt);
+            this.rateLimitHandler(resetAt, rateLimitInfo ?? undefined);
           }
         }
       }
@@ -97,9 +105,16 @@ export class LinearPoller {
         const message = `Linear rate limit hit - paused until ${this.formatResetTime(error.resetAt)}`;
         if (this.lastRateLimitMessage !== message) {
           this.lastRateLimitMessage = message;
-          logger.warn({ resetAt: this.formatResetTime(error.resetAt) }, message);
+          logger.warn(
+            {
+              resetAt: this.formatResetTime(error.resetAt),
+              requestsRemaining: error.rateLimitInfo?.requestsRemaining,
+              complexityRemaining: error.rateLimitInfo?.complexityRemaining,
+            },
+            message
+          );
           if (this.rateLimitHandler) {
-            this.rateLimitHandler(error.resetAt);
+            this.rateLimitHandler(error.resetAt, error.rateLimitInfo);
           }
         }
       } else {
