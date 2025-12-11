@@ -248,6 +248,23 @@ export class LinearTicketQueue {
   }
 
   /**
+   * Requeue a task that hit rate limiting without counting as a failure
+   */
+  requeueForRateLimit(id: number): void {
+    const db = getDatabase();
+
+    db.prepare(`
+      UPDATE linear_ticket_queue
+      SET status = 'pending',
+          started_at = NULL,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(id);
+
+    logger.info({ id }, 'Task requeued due to rate limit');
+  }
+
+  /**
    * Cancel a pending task
    */
   cancel(id: number): void {

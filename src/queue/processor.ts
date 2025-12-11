@@ -1,7 +1,7 @@
 import { createChildLogger } from '../utils/logger.js';
 import { linearQueue, type LinearQueueItem } from './linear-queue.js';
 import { claudeQueue, type ClaudeQueueItem } from './claude-queue.js';
-import { linearClient } from '../linear/client.js';
+import { linearClient, RateLimitError } from '../linear/client.js';
 import { worktreeManager } from '../agents/worktree.js';
 import {
   readinessScorerAgent,
@@ -80,10 +80,16 @@ export class QueueProcessor {
    * Process one item from each queue (if available)
    */
   async processOnce(): Promise<void> {
-    // Process linear queue tasks
-    const linearTask = linearQueue.dequeue();
-    if (linearTask) {
-      await this.processLinearTask(linearTask);
+    // Skip linear queue processing if rate limited
+    if (linearClient.isRateLimited()) {
+      const resetAt = linearClient.getRateLimitResetAt();
+      logger.debug({ resetAt: resetAt?.toLocaleTimeString() }, 'Skipping linear tasks - rate limited');
+    } else {
+      // Process linear queue tasks
+      const linearTask = linearQueue.dequeue();
+      if (linearTask) {
+        await this.processLinearTask(linearTask);
+      }
     }
 
     // Process claude queue tasks (respects concurrency)
@@ -124,6 +130,17 @@ export class QueueProcessor {
           linearQueue.fail(task.id, `Unknown task type: ${task.taskType}`);
       }
     } catch (error) {
+      // Handle rate limit errors specially - don't count as task failure
+      if (error instanceof RateLimitError) {
+        logger.warn(
+          { taskId: task.id, ticketId: task.ticketIdentifier, resetAt: error.resetAt.toLocaleTimeString() },
+          'Task hit rate limit, requeueing without penalty'
+        );
+        // Requeue without incrementing retry count
+        linearQueue.requeueForRateLimit(task.id);
+        return;
+      }
+
       const errorMessage = error instanceof Error ? error.message : String(error);
       const errorStack = error instanceof Error ? error.stack : undefined;
       logger.error(

@@ -81,6 +81,13 @@ export class QueueScheduler {
    * Poll Linear for tickets and enqueue new ones for evaluation
    */
   async pollForNewTickets(): Promise<number> {
+    // Skip polling if rate limited
+    if (linearClient.isRateLimited()) {
+      const resetAt = linearClient.getRateLimitResetAt();
+      logger.debug({ resetAt: resetAt?.toLocaleTimeString() }, 'Skipping poll - rate limited');
+      return 0;
+    }
+
     try {
       logger.debug('Polling Linear for tickets');
       const tickets = await linearClient.getTickets();
@@ -142,6 +149,11 @@ export class QueueScheduler {
    * Re-enqueue response checks for tickets waiting for human input
    */
   private async reEnqueueResponseChecks(): Promise<void> {
+    // Skip if rate limited
+    if (linearClient.isRateLimited()) {
+      return;
+    }
+
     try {
       const tickets = await linearClient.getTickets();
 
