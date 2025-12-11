@@ -2,7 +2,7 @@ import { config } from './config.js';
 import { logger, isInteractiveMode } from './utils/logger.js';
 import { terminalUI } from './utils/terminal.js';
 import { poller } from './linear/poller.js';
-import { scheduler } from './orchestrator/scheduler.js';
+import { workflowEngine } from './workflow/index.js';
 import { stateManager } from './linear/state.js';
 import { initializeAuth, getAuth } from './linear/auth.js';
 
@@ -59,7 +59,7 @@ async function main() {
     logger.info('Shutting down...');
     clearInterval(heartbeatInterval);
     poller.stop();
-    await scheduler.shutdown();
+    await workflowEngine.shutdown();
     await stateManager.unregisterDaemon();
 
     if (isInteractiveMode) {
@@ -73,7 +73,7 @@ async function main() {
   process.on('SIGTERM', () => void shutdown());
 
   poller.setHandler(async (tickets) => {
-    await scheduler.processTickets(tickets);
+    await workflowEngine.processTickets(tickets);
   });
 
   poller.start();

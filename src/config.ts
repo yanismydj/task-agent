@@ -34,6 +34,12 @@ const ConfigSchema = z.object({
     workDir: z.string().min(1, 'AGENTS_WORK_DIR is required'),
     timeoutMinutes: z.number().int().min(1).default(60),
     maxRetries: z.number().int().min(0).default(2),
+    readinessThreshold: z.number().int().min(0).max(100).default(70),
+    models: z.object({
+      fast: z.string().default('claude-haiku-4-5-20251001'),
+      standard: z.string().default('claude-sonnet-4-5-20250514'),
+      advanced: z.string().default('claude-opus-4-5-20251101'),
+    }),
   }),
   daemon: z.object({
     pollIntervalSeconds: z.number().int().min(5).default(30),
@@ -84,6 +90,12 @@ function loadConfig(): Config {
       workDir: process.env['AGENTS_WORK_DIR'] ?? '',
       timeoutMinutes: parseInt(process.env['AGENTS_TIMEOUT_MINUTES'] || '60', 10),
       maxRetries: parseInt(process.env['AGENTS_MAX_RETRIES'] || '2', 10),
+      readinessThreshold: parseInt(process.env['AGENTS_READINESS_THRESHOLD'] || '70', 10),
+      models: {
+        fast: process.env['AGENTS_MODEL_FAST'] || 'claude-haiku-4-5-20251001',
+        standard: process.env['AGENTS_MODEL_STANDARD'] || 'claude-sonnet-4-5-20250514',
+        advanced: process.env['AGENTS_MODEL_ADVANCED'] || 'claude-opus-4-5-20251101',
+      },
     },
     daemon: {
       pollIntervalSeconds: parseInt(process.env['DAEMON_POLL_INTERVAL_SECONDS'] || '30', 10),
