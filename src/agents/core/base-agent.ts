@@ -5,11 +5,18 @@ import { createChildLogger } from '../../utils/logger.js';
 import type { Agent, AgentConfig, AgentInput, AgentOutput, ModelTier } from './types.js';
 import { AgentError, AgentTimeoutError } from './errors.js';
 
-const MODEL_MAP: Record<ModelTier, string> = {
-  fast: 'claude-3-5-haiku-20241022',
-  standard: 'claude-sonnet-4-20250514',
-  advanced: 'claude-opus-4-20250514',
-};
+// Get model from config, with fallbacks
+function getModelForTier(tier: ModelTier): string {
+  const models = config.agents.models;
+  switch (tier) {
+    case 'fast':
+      return models.fast;
+    case 'standard':
+      return models.standard;
+    case 'advanced':
+      return models.advanced;
+  }
+}
 
 export abstract class BaseAgent<TInput, TOutput> implements Agent<TInput, TOutput> {
   abstract readonly config: AgentConfig;
@@ -33,7 +40,7 @@ export abstract class BaseAgent<TInput, TOutput> implements Agent<TInput, TOutpu
   }
 
   protected getModel(): string {
-    return MODEL_MAP[this.config.modelTier];
+    return getModelForTier(this.config.modelTier);
   }
 
   validateInput(input: unknown): TInput {
@@ -95,10 +102,27 @@ export abstract class BaseAgent<TInput, TOutput> implements Agent<TInput, TOutpu
         throw new AgentTimeoutError(this.config.type, 'unknown', timeoutMs);
       }
 
-      logger.error(
-        { error: error instanceof Error ? error.message : String(error), durationMs },
-        'Claude API call failed'
-      );
+      // Extract detailed error info for better debugging
+      const errorDetails: Record<string, unknown> = {
+        durationMs,
+        model,
+      };
+
+      if (error instanceof Error) {
+        errorDetails.message = error.message;
+        errorDetails.name = error.name;
+        // Anthropic SDK errors include status and other details
+        if ('status' in error) {
+          errorDetails.status = (error as { status: number }).status;
+        }
+        if ('error' in error) {
+          errorDetails.apiError = (error as { error: unknown }).error;
+        }
+      } else {
+        errorDetails.error = String(error);
+      }
+
+      logger.error(errorDetails, 'Claude API call failed');
       throw error;
     }
   }
