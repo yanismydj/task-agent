@@ -2,7 +2,7 @@ import { LinearClient, Issue, Comment } from '@linear/sdk';
 import { config } from '../config.js';
 import { createChildLogger } from '../utils/logger.js';
 import { initializeAuth, getAuth } from './auth.js';
-import type { TicketInfo, TicketComment, TicketUpdate } from './types.js';
+import type { TicketInfo, TicketComment, TicketUpdate, ProjectLead } from './types.js';
 
 const logger = createChildLogger({ module: 'linear-client' });
 
@@ -252,6 +252,45 @@ export class LinearApiClient {
         logger.info({ issueId, labelName }, 'Removed label from ticket');
       }
     });
+  }
+
+  /**
+   * Get the project lead for a given project ID
+   * Returns null if no project ID is configured or no lead is set
+   */
+  async getProjectLead(projectId?: string): Promise<ProjectLead | null> {
+    const targetProjectId = projectId || this.projectId;
+    if (!targetProjectId) {
+      return null;
+    }
+
+    return this.withRetry(async (client) => {
+      const project = await client.project(targetProjectId);
+      if (!project) {
+        return null;
+      }
+
+      const lead = await project.lead;
+      if (!lead) {
+        logger.debug({ projectId: targetProjectId }, 'Project has no lead set');
+        return null;
+      }
+
+      return {
+        id: lead.id,
+        name: lead.name,
+        displayName: lead.displayName,
+        url: lead.url,
+      };
+    });
+  }
+
+  /**
+   * Format a user mention for use in comments
+   * Linear mentions work by including the user's profile URL in the text
+   */
+  formatUserMention(user: ProjectLead): string {
+    return user.url;
   }
 
   private async mapIssueToTicket(issue: Issue): Promise<TicketInfo> {

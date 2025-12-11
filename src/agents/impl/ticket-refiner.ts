@@ -227,20 +227,22 @@ Focus on remaining gaps and unanswered questions.`;
     };
   }
 
-  formatQuestionsForLinear(output: TicketRefinerOutput, ticketIdentifier: string): string {
+  formatQuestionsForLinear(output: TicketRefinerOutput, ticketIdentifier: string, mentionPrefix?: string): string {
     if (output.action === 'ready') {
       return '';
     }
 
+    const mention = mentionPrefix || '';
+
     if (output.action === 'blocked') {
-      return `**[TaskAgent]** This ticket appears to be blocked:\n\n${output.blockerReason || 'Unknown blocker'}\n\nPlease resolve the blocker and update the ticket.`;
+      return `${mention}**[TaskAgent]** This ticket appears to be blocked:\n\n${output.blockerReason || 'Unknown blocker'}\n\nPlease resolve the blocker and update the ticket.`;
     }
 
     const criticalQuestions = output.questions.filter((q) => q.priority === 'critical');
     const importantQuestions = output.questions.filter((q) => q.priority === 'important');
     const niceToHaveQuestions = output.questions.filter((q) => q.priority === 'nice_to_have');
 
-    let comment = `**[TaskAgent]** Before I can start working on ${ticketIdentifier}, I have some clarifying questions:\n\n`;
+    let comment = `${mention}**[TaskAgent]** Before I can start working on ${ticketIdentifier}, I have some clarifying questions:\n\n`;
 
     if (criticalQuestions.length > 0) {
       comment += '### Critical Questions (must answer)\n';

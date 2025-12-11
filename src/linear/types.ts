@@ -1,3 +1,10 @@
+export interface ProjectLead {
+  id: string;
+  name: string;
+  displayName: string;
+  url: string;
+}
+
 export interface TicketInfo {
   id: string;
   identifier: string;

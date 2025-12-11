@@ -1,7 +1,7 @@
 import { config } from '../config.js';
 import { createChildLogger } from '../utils/logger.js';
 import { linearClient } from '../linear/client.js';
-import type { TicketInfo, TicketComment } from '../linear/types.js';
+import type { TicketInfo, TicketComment, ProjectLead } from '../linear/types.js';
 import { worktreeManager } from '../agents/worktree.js';
 import {
   readinessScorerAgent,
@@ -44,6 +44,40 @@ interface ProcessingResult {
 
 export class WorkflowEngine {
   private processing: Set<string> = new Set();
+  private projectLead: ProjectLead | null = null;
+  private projectLeadFetched = false;
+
+  /**
+   * Get the project lead (fetches once and caches)
+   */
+  private async getProjectLead(): Promise<ProjectLead | null> {
+    if (!this.projectLeadFetched) {
+      try {
+        this.projectLead = await linearClient.getProjectLead();
+        if (this.projectLead) {
+          logger.info(
+            { leadName: this.projectLead.displayName },
+            'Project lead loaded for mentions'
+          );
+        }
+      } catch (error) {
+        logger.warn({ error }, 'Failed to fetch project lead');
+      }
+      this.projectLeadFetched = true;
+    }
+    return this.projectLead;
+  }
+
+  /**
+   * Format a mention string for the project lead (if available)
+   */
+  private async formatLeadMention(): Promise<string> {
+    const lead = await this.getProjectLead();
+    if (lead) {
+      return `${linearClient.formatUserMention(lead)} `;
+    }
+    return '';
+  }
 
   async processTickets(tickets: TicketInfo[]): Promise<ProcessingResult[]> {
     const results: ProcessingResult[] = [];
@@ -292,9 +326,11 @@ export class WorkflowEngine {
       return this.createResult(ticket, previousState, 'blocked', 'blocked-by-refiner');
     }
 
+    const mentionPrefix = await this.formatLeadMention();
     const formattedQuestions = ticketRefinerAgent.formatQuestionsForLinear(
       refinement,
-      ticket.identifier
+      ticket.identifier,
+      mentionPrefix
     );
 
     if (formattedQuestions) {
@@ -546,7 +582,8 @@ export class WorkflowEngine {
     ticket: TicketInfo,
     readiness: ReadinessScorerOutput
   ): Promise<void> {
-    const commentBody = `${APPROVAL_TAG}
+    const mentionPrefix = await this.formatLeadMention();
+    const commentBody = `${mentionPrefix}${APPROVAL_TAG}
 
 I'd like to start working on this ticket. Here's my analysis:
 
