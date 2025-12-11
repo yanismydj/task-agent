@@ -360,14 +360,15 @@ export class QueueProcessor {
           inputData: { waitingFor: 'questions', readiness },
         });
       } else {
-        // Post questions
-        const formattedQuestions = ticketRefinerAgent.formatQuestionsForLinear(
-          refinement,
-          task.ticketIdentifier
-        );
+        // Post questions as individual comments
+        const questionComments = ticketRefinerAgent.formatQuestionsAsComments(refinement);
 
-        if (formattedQuestions) {
-          await linearClient.addComment(task.ticketId, formattedQuestions);
+        if (questionComments.length > 0) {
+          // Post each question as a separate comment for easy reply
+          for (const comment of questionComments) {
+            await linearClient.addComment(task.ticketId, comment);
+          }
+
           await this.syncLabel(task.ticketId, 'ta:awaiting-response');
           this.callbacks.onStateChange?.(task.ticketId, 'awaiting_response');
 
@@ -735,13 +736,16 @@ Reply with **"yes"** or **"approve"** to start, or **"no"** to skip this ticket.
   private hasUnansweredQuestions(
     comments: Array<{ body: string; createdAt: Date; user: { isMe: boolean } | null }>
   ): boolean {
-    // Find the most recent TaskAgent question comment
+    // Find the most recent TaskAgent question comment (identified by emoji markers)
     const sortedComments = [...comments].sort(
       (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
     );
 
+    // Question comments use emoji markers: ❗ (critical), ❓ (important), 💭 (nice to have)
     const lastQuestionComment = sortedComments.find(
-      (c) => c.user?.isMe && c.body.includes(TASK_AGENT_TAG) && c.body.includes('clarifying questions')
+      (c) => c.user?.isMe && c.body.includes(TASK_AGENT_TAG) && (
+        c.body.includes('❗') || c.body.includes('❓') || c.body.includes('💭')
+      )
     );
 
     if (!lastQuestionComment) {

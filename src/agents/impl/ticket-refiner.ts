@@ -227,56 +227,46 @@ Focus on remaining gaps and unanswered questions.`;
     };
   }
 
-  formatQuestionsForLinear(output: TicketRefinerOutput, ticketIdentifier: string, mentionPrefix?: string): string {
+  /**
+   * Format questions as individual comments for Linear
+   * Returns an array of comment strings, one per question
+   */
+  formatQuestionsAsComments(output: TicketRefinerOutput, mentionPrefix?: string): string[] {
     if (output.action === 'ready') {
-      return '';
+      return [];
     }
 
     const mention = mentionPrefix || '';
 
     if (output.action === 'blocked') {
-      return `${mention}**[TaskAgent]** This ticket appears to be blocked:\n\n${output.blockerReason || 'Unknown blocker'}\n\nPlease resolve the blocker and update the ticket.`;
+      return [`${mention}**[TaskAgent]** ⚠️ Blocked: ${output.blockerReason || 'Unknown blocker'}`];
     }
 
-    const criticalQuestions = output.questions.filter((q) => q.priority === 'critical');
-    const importantQuestions = output.questions.filter((q) => q.priority === 'important');
-    const niceToHaveQuestions = output.questions.filter((q) => q.priority === 'nice_to_have');
+    const comments: string[] = [];
 
-    let comment = `${mention}**[TaskAgent]** Before I can start working on ${ticketIdentifier}, I have some clarifying questions:\n\n`;
+    // Sort questions by priority: critical first, then important, then nice_to_have
+    const sortedQuestions = [...output.questions].sort((a, b) => {
+      const priorityOrder = { critical: 0, important: 1, nice_to_have: 2 };
+      return priorityOrder[a.priority] - priorityOrder[b.priority];
+    });
 
-    if (criticalQuestions.length > 0) {
-      comment += '### Critical Questions (must answer)\n';
-      for (const q of criticalQuestions) {
-        comment += `- **${q.question}**\n  _${q.rationale}_\n\n`;
-      }
+    // Limit to top 3 most important questions to avoid spam
+    const topQuestions = sortedQuestions.slice(0, 3);
+
+    for (const q of topQuestions) {
+      const priorityLabel = q.priority === 'critical' ? '❗' : q.priority === 'important' ? '❓' : '💭';
+      comments.push(`${mention}**[TaskAgent]** ${priorityLabel} ${q.question}`);
     }
 
-    if (importantQuestions.length > 0) {
-      comment += '### Important Questions\n';
-      for (const q of importantQuestions) {
-        comment += `- ${q.question}\n  _${q.rationale}_\n\n`;
-      }
-    }
+    return comments;
+  }
 
-    if (niceToHaveQuestions.length > 0) {
-      comment += '### Nice to Have\n';
-      for (const q of niceToHaveQuestions) {
-        comment += `- ${q.question}\n`;
-      }
-      comment += '\n';
-    }
-
-    if (output.suggestedAcceptanceCriteria.length > 0) {
-      comment += '### Suggested Acceptance Criteria\n';
-      for (const criteria of output.suggestedAcceptanceCriteria) {
-        comment += `- [ ] ${criteria}\n`;
-      }
-      comment += '\n';
-    }
-
-    comment += '---\n_Please respond to the questions above, and I will re-evaluate the ticket._';
-
-    return comment;
+  /**
+   * @deprecated Use formatQuestionsAsComments instead
+   */
+  formatQuestionsForLinear(output: TicketRefinerOutput, _ticketIdentifier: string, mentionPrefix?: string): string {
+    const comments = this.formatQuestionsAsComments(output, mentionPrefix);
+    return comments.join('\n\n');
   }
 }
 
