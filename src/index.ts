@@ -1,10 +1,9 @@
 import { config } from './config.js';
 import { logger, isInteractiveMode } from './utils/logger.js';
 import { terminalUI } from './utils/terminal.js';
-import { poller } from './linear/poller.js';
-import { workflowEngine } from './workflow/index.js';
 import { stateManager } from './linear/state.js';
 import { initializeAuth, getAuth } from './linear/auth.js';
+import { queueManager, queueProcessor, queueScheduler } from './queue/index.js';
 
 async function checkOAuthAuthorization(): Promise<void> {
   if (config.linear.auth.mode !== 'oauth') {
@@ -36,6 +35,10 @@ async function main() {
 
   logger.info('TaskAgent starting...');
 
+  // Initialize the queue system
+  queueManager.initialize();
+  logger.info('Task queue system initialized');
+
   // Initialize and register daemon in Linear
   await stateManager.registerDaemon();
 
@@ -43,7 +46,7 @@ async function main() {
     {
       teamId: config.linear.teamId,
       projectId: config.linear.projectId || '(all)',
-      maxAgents: config.agents.maxConcurrent,
+      maxCodeExecutors: config.agents.maxCodeExecutors,
       pollInterval: `${config.daemon.pollIntervalSeconds}s`,
       authMode: config.linear.auth.mode,
     },
@@ -53,13 +56,29 @@ async function main() {
   // Set up heartbeat every 60 seconds
   const heartbeatInterval = setInterval(async () => {
     await stateManager.updateHeartbeat();
+
+    // Log queue stats periodically
+    const stats = queueManager.getStats();
+    logger.debug(
+      {
+        linearPending: stats.linear.pending,
+        linearProcessing: stats.linear.processing,
+        claudePending: stats.claude.pending,
+        claudeProcessing: stats.claude.processing,
+      },
+      'Queue status'
+    );
   }, 60000);
 
   async function shutdown(): Promise<void> {
     logger.info('Shutting down...');
     clearInterval(heartbeatInterval);
-    poller.stop();
-    await workflowEngine.shutdown();
+
+    // Stop queue processing
+    queueScheduler.stop();
+    queueProcessor.stop();
+    queueManager.shutdown();
+
     await stateManager.unregisterDaemon();
 
     if (isInteractiveMode) {
@@ -72,20 +91,24 @@ async function main() {
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
 
-  poller.setHandler(async (tickets) => {
-    await workflowEngine.processTickets(tickets);
+  // Set up processor callbacks for UI updates
+  queueProcessor.setCallbacks({
+    onStateChange: (ticketId, newState) => {
+      logger.debug({ ticketId, newState }, 'Ticket state changed');
+    },
+    onError: (ticketId, error) => {
+      logger.error({ ticketId, error }, 'Task error');
+    },
   });
 
-  // Set up rate limit handler to show UI warning
-  poller.setRateLimitHandler((resetAt) => {
-    if (isInteractiveMode) {
-      terminalUI.setRateLimitStatus(resetAt);
-    }
-  });
+  // Start the queue processor (processes tasks from queues)
+  queueProcessor.start(1000); // Process every 1 second
 
-  poller.start();
+  // Start the scheduler (polls Linear and enqueues work)
+  // Poll every 60 seconds, check responses every 30 seconds
+  queueScheduler.start();
 
-  logger.info('Daemon running, polling for tickets');
+  logger.info('Daemon running with task queue system');
 }
 
 main().catch(async (error) => {
