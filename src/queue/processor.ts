@@ -341,17 +341,16 @@ export class QueueProcessor {
       await this.syncLabel(task.ticketId, 'ta:blocked');
       this.callbacks.onStateChange?.(task.ticketId, 'blocked', { reason: refinement.blockerReason });
     } else {
-      // Post questions
-      const formattedQuestions = ticketRefinerAgent.formatQuestionsForLinear(
-        refinement,
-        task.ticketIdentifier
-      );
+      // Post questions - but first check if we've already asked questions without getting a response
+      const hasUnansweredQuestions = this.hasUnansweredQuestions(comments);
 
-      if (formattedQuestions) {
-        await linearClient.addComment(task.ticketId, formattedQuestions);
+      if (hasUnansweredQuestions) {
+        logger.info(
+          { ticketId: task.ticketIdentifier },
+          'Already have unanswered questions, skipping duplicate comment'
+        );
+        // Still set the label and enqueue response check
         await this.syncLabel(task.ticketId, 'ta:awaiting-response');
-        this.callbacks.onStateChange?.(task.ticketId, 'awaiting_response');
-
         linearQueue.enqueue({
           ticketId: task.ticketId,
           ticketIdentifier: task.ticketIdentifier,
@@ -360,6 +359,27 @@ export class QueueProcessor {
           readinessScore: readiness.score,
           inputData: { waitingFor: 'questions', readiness },
         });
+      } else {
+        // Post questions
+        const formattedQuestions = ticketRefinerAgent.formatQuestionsForLinear(
+          refinement,
+          task.ticketIdentifier
+        );
+
+        if (formattedQuestions) {
+          await linearClient.addComment(task.ticketId, formattedQuestions);
+          await this.syncLabel(task.ticketId, 'ta:awaiting-response');
+          this.callbacks.onStateChange?.(task.ticketId, 'awaiting_response');
+
+          linearQueue.enqueue({
+            ticketId: task.ticketId,
+            ticketIdentifier: task.ticketIdentifier,
+            taskType: 'check_response',
+            priority: task.priority,
+            readinessScore: readiness.score,
+            inputData: { waitingFor: 'questions', readiness },
+          });
+        }
       }
     }
   }
@@ -624,6 +644,17 @@ export class QueueProcessor {
     task: LinearQueueItem,
     readiness: ReadinessScorerOutput
   ): Promise<void> {
+    // Check if we've already requested approval
+    const comments = await linearClient.getComments(task.ticketId);
+    const hasExistingApprovalRequest = comments.some(
+      (c) => c.body.includes(APPROVAL_TAG) && c.user?.isMe
+    );
+
+    if (hasExistingApprovalRequest) {
+      logger.info({ ticketId: task.ticketIdentifier }, 'Approval already requested, skipping duplicate comment');
+      return;
+    }
+
     const commentBody = `${APPROVAL_TAG}
 
 I'd like to start working on this ticket. Here's my analysis:
@@ -696,6 +727,34 @@ Reply with **"yes"** or **"approve"** to start, or **"no"** to skip this ticket.
     }
 
     return null;
+  }
+
+  /**
+   * Check if we've already posted questions that haven't been answered yet
+   */
+  private hasUnansweredQuestions(
+    comments: Array<{ body: string; createdAt: Date; user: { isMe: boolean } | null }>
+  ): boolean {
+    // Find the most recent TaskAgent question comment
+    const sortedComments = [...comments].sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+    );
+
+    const lastQuestionComment = sortedComments.find(
+      (c) => c.user?.isMe && c.body.includes(TASK_AGENT_TAG) && c.body.includes('clarifying questions')
+    );
+
+    if (!lastQuestionComment) {
+      return false;
+    }
+
+    // Check if there are any non-TaskAgent comments after the question
+    const hasResponseAfterQuestion = sortedComments.some(
+      (c) => !c.user?.isMe && c.createdAt > lastQuestionComment.createdAt
+    );
+
+    // If there's no response after our questions, we have unanswered questions
+    return !hasResponseAfterQuestion;
   }
 }
 
