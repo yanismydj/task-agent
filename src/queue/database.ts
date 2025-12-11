@@ -6,7 +6,7 @@ const logger = createChildLogger({ module: 'queue-database' });
 
 let db: Database.Database | null = null;
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const MIGRATIONS: Record<number, string[]> = {
   1: [
@@ -74,7 +74,84 @@ const MIGRATIONS: Record<number, string[]> = {
     `CREATE INDEX IF NOT EXISTS idx_claude_queue_ticket
      ON claude_code_queue(ticket_id)`,
 
-    `INSERT OR IGNORE INTO schema_version (version) VALUES (${SCHEMA_VERSION})`,
+    `INSERT OR IGNORE INTO schema_version (version) VALUES (1)`,
+  ],
+
+  // Migration 2: Remove problematic UNIQUE constraints
+  // The old constraint UNIQUE(ticket_id, task_type, status) caused issues when:
+  // - Completing a task (can't have multiple completed tasks for same ticket/type)
+  // - Retrying a failed task (might conflict with new pending tasks)
+  // SQLite doesn't support DROP CONSTRAINT, so we recreate the tables
+  2: [
+    // Recreate linear_ticket_queue without the problematic UNIQUE constraint
+    `CREATE TABLE IF NOT EXISTS linear_ticket_queue_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id TEXT NOT NULL,
+      ticket_identifier TEXT NOT NULL,
+      task_type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      priority INTEGER NOT NULL DEFAULT 3,
+      readiness_score INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      started_at TEXT,
+      completed_at TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      max_retries INTEGER NOT NULL DEFAULT 3,
+      error_message TEXT,
+      input_data TEXT,
+      output_data TEXT
+    )`,
+
+    `INSERT INTO linear_ticket_queue_new SELECT * FROM linear_ticket_queue`,
+
+    `DROP TABLE linear_ticket_queue`,
+
+    `ALTER TABLE linear_ticket_queue_new RENAME TO linear_ticket_queue`,
+
+    // Recreate indexes
+    `CREATE INDEX IF NOT EXISTS idx_linear_queue_status_priority
+     ON linear_ticket_queue(status, priority ASC, readiness_score DESC, created_at ASC)`,
+
+    `CREATE INDEX IF NOT EXISTS idx_linear_queue_ticket
+     ON linear_ticket_queue(ticket_id, task_type)`,
+
+    // Recreate claude_code_queue without UNIQUE constraint
+    `CREATE TABLE IF NOT EXISTS claude_code_queue_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id TEXT NOT NULL,
+      ticket_identifier TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      priority INTEGER NOT NULL DEFAULT 3,
+      readiness_score INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      started_at TEXT,
+      completed_at TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      max_retries INTEGER NOT NULL DEFAULT 2,
+      error_message TEXT,
+      prompt TEXT,
+      worktree_path TEXT,
+      branch_name TEXT,
+      pr_url TEXT,
+      agent_session_id TEXT
+    )`,
+
+    `INSERT INTO claude_code_queue_new SELECT * FROM claude_code_queue`,
+
+    `DROP TABLE claude_code_queue`,
+
+    `ALTER TABLE claude_code_queue_new RENAME TO claude_code_queue`,
+
+    // Recreate indexes
+    `CREATE INDEX IF NOT EXISTS idx_claude_queue_status_priority
+     ON claude_code_queue(status, priority ASC, readiness_score DESC, created_at ASC)`,
+
+    `CREATE INDEX IF NOT EXISTS idx_claude_queue_ticket
+     ON claude_code_queue(ticket_id)`,
+
+    `INSERT OR REPLACE INTO schema_version (version) VALUES (2)`,
   ],
 };
 

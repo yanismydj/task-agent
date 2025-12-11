@@ -65,7 +65,7 @@ function rowToItem(row: DbRow): LinearQueueItem {
 export class LinearTicketQueue {
   /**
    * Add a new task to the queue
-   * Uses INSERT OR IGNORE to prevent duplicates (based on ticket_id + task_type + status)
+   * Only allows one active (pending/processing) task per ticket_id + task_type
    */
   enqueue(params: {
     ticketId: string;
@@ -79,8 +79,23 @@ export class LinearTicketQueue {
     const db = getDatabase();
 
     try {
+      // Check if there's already an active (pending or processing) task for this ticket/type
+      const existing = db.prepare(`
+        SELECT id FROM linear_ticket_queue
+        WHERE ticket_id = ? AND task_type = ? AND status IN ('pending', 'processing')
+        LIMIT 1
+      `).get(params.ticketId, params.taskType) as { id: number } | undefined;
+
+      if (existing) {
+        logger.debug(
+          { ticketId: params.ticketIdentifier, taskType: params.taskType, existingId: existing.id },
+          'Task already active in queue'
+        );
+        return null;
+      }
+
       const stmt = db.prepare(`
-        INSERT OR IGNORE INTO linear_ticket_queue
+        INSERT INTO linear_ticket_queue
         (ticket_id, ticket_identifier, task_type, priority, readiness_score, input_data, max_retries)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
@@ -94,15 +109,6 @@ export class LinearTicketQueue {
         params.inputData ? JSON.stringify(params.inputData) : null,
         params.maxRetries ?? 3
       );
-
-      if (result.changes === 0) {
-        // Already exists
-        logger.debug(
-          { ticketId: params.ticketIdentifier, taskType: params.taskType },
-          'Task already in queue'
-        );
-        return null;
-      }
 
       const item = this.getById(result.lastInsertRowid as number);
       logger.info(
@@ -205,16 +211,6 @@ export class LinearTicketQueue {
       const newRetryCount = row.retry_count + 1;
 
       if (newRetryCount < row.max_retries) {
-        // Before setting this task back to pending, cancel any duplicate pending tasks
-        // that may have been created by the scheduler while this task was processing.
-        // This prevents UNIQUE constraint violations on (ticket_id, task_type, status).
-        db.prepare(`
-          UPDATE linear_ticket_queue
-          SET status = 'cancelled',
-              updated_at = datetime('now')
-          WHERE ticket_id = ? AND task_type = ? AND status = 'pending' AND id != ?
-        `).run(row.ticket_id, row.task_type, id);
-
         // Requeue for retry
         db.prepare(`
           UPDATE linear_ticket_queue

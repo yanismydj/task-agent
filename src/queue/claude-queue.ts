@@ -84,7 +84,7 @@ export class ClaudeCodeQueue {
 
   /**
    * Add a new code execution task to the queue
-   * Uses INSERT OR IGNORE to prevent duplicates (based on ticket_id + status)
+   * Only allows one active (pending/processing) execution per ticket_id
    */
   enqueue(params: {
     ticketId: string;
@@ -100,8 +100,23 @@ export class ClaudeCodeQueue {
     const db = getDatabase();
 
     try {
+      // Check if there's already an active execution for this ticket
+      const existing = db.prepare(`
+        SELECT id FROM claude_code_queue
+        WHERE ticket_id = ? AND status IN ('pending', 'processing')
+        LIMIT 1
+      `).get(params.ticketId) as { id: number } | undefined;
+
+      if (existing) {
+        logger.debug(
+          { ticketId: params.ticketIdentifier, existingId: existing.id },
+          'Execution task already active in queue'
+        );
+        return null;
+      }
+
       const stmt = db.prepare(`
-        INSERT OR IGNORE INTO claude_code_queue
+        INSERT INTO claude_code_queue
         (ticket_id, ticket_identifier, priority, readiness_score, prompt, worktree_path, branch_name, agent_session_id, max_retries)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
@@ -117,11 +132,6 @@ export class ClaudeCodeQueue {
         params.agentSessionId ?? null,
         params.maxRetries ?? 2
       );
-
-      if (result.changes === 0) {
-        logger.debug({ ticketId: params.ticketIdentifier }, 'Execution task already in queue');
-        return null;
-      }
 
       const item = this.getById(result.lastInsertRowid as number);
       logger.info({ ticketId: params.ticketIdentifier, id: item?.id }, 'Execution task enqueued');
