@@ -15,7 +15,15 @@ const CALLBACK_PATH = '/oauth/callback';
 const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
 
 // Scopes needed for TaskAgent
-const SCOPES = ['read', 'write', 'issues:create', 'comments:create'];
+// See: https://linear.app/developers/oauth-actor-authorization
+const SCOPES = [
+  'read',
+  'write',
+  'issues:create',
+  'comments:create',
+  'app:assignable',   // Agent can be assigned issues
+  'app:mentionable',  // Agent can be @mentioned
+];
 
 interface TokenData {
   access_token: string;

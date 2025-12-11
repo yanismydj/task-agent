@@ -1,4 +1,10 @@
-import { LinearClient, Issue, Comment, RateLimitPayload } from '@linear/sdk';
+import {
+  LinearClient,
+  Issue,
+  Comment,
+  RateLimitPayload,
+  AgentSession,
+} from '@linear/sdk';
 import { config } from '../config.js';
 import { createChildLogger } from '../utils/logger.js';
 import { initializeAuth, getAuth } from './auth.js';
@@ -469,6 +475,194 @@ export class LinearApiClient {
    */
   formatUserMention(user: ProjectLead): string {
     return user.url;
+  }
+
+  // ============================================================
+  // Issue State Management
+  // ============================================================
+
+  /**
+   * Get workflow states for the team
+   */
+  async getWorkflowStates(): Promise<Array<{ id: string; name: string; type: string }>> {
+    return this.withRetry(async (client) => {
+      const team = await client.team(this.teamId);
+      const states = await team.states();
+      return states.nodes.map((s) => ({
+        id: s.id,
+        name: s.name,
+        type: s.type,
+      }));
+    });
+  }
+
+  /**
+   * Set issue state to "In Progress" (or equivalent started state)
+   */
+  async setIssueInProgress(issueId: string): Promise<void> {
+    await this.withRetry(async (client) => {
+      const team = await client.team(this.teamId);
+      const states = await team.states();
+
+      // Find "In Progress" state or equivalent (type: 'started')
+      const inProgressState = states.nodes.find(
+        (s) => s.name.toLowerCase() === 'in progress' || s.type === 'started'
+      );
+
+      if (inProgressState) {
+        await client.updateIssue(issueId, { stateId: inProgressState.id });
+        logger.info({ issueId, stateName: inProgressState.name }, 'Set issue to In Progress');
+      } else {
+        logger.warn({ issueId }, 'No "In Progress" state found for team');
+      }
+    });
+  }
+
+  /**
+   * Set issue state to "Done" (or equivalent completed state)
+   */
+  async setIssueDone(issueId: string): Promise<void> {
+    await this.withRetry(async (client) => {
+      const team = await client.team(this.teamId);
+      const states = await team.states();
+
+      // Find "Done" state or equivalent (type: 'completed')
+      const doneState = states.nodes.find(
+        (s) => s.name.toLowerCase() === 'done' || s.type === 'completed'
+      );
+
+      if (doneState) {
+        await client.updateIssue(issueId, { stateId: doneState.id });
+        logger.info({ issueId, stateName: doneState.name }, 'Set issue to Done');
+      } else {
+        logger.warn({ issueId }, 'No "Done" state found for team');
+      }
+    });
+  }
+
+  // ============================================================
+  // Agent Session Support (Linear Agents API)
+  // https://linear.app/developers/agents
+  // ============================================================
+
+  /**
+   * Create an agent session for an issue
+   * This creates a tracked session that shows up in Linear's UI
+   */
+  async createAgentSession(issueId: string, externalLink?: string): Promise<AgentSession | null> {
+    try {
+      return await this.withRetry(async (client) => {
+        const payload = await client.agentSessionCreateOnIssue({
+          issueId,
+          externalLink,
+        });
+        const session = await payload.agentSession;
+        if (session) {
+          logger.info({ issueId, sessionId: session.id }, 'Created agent session');
+        }
+        return session ?? null;
+      });
+    } catch (error) {
+      // Agent sessions may not be available if not using actor=app OAuth mode
+      logger.debug({ issueId, error }, 'Failed to create agent session (may require actor=app OAuth)');
+      return null;
+    }
+  }
+
+  /**
+   * Update an agent session's external link
+   * Note: Status updates happen implicitly through activities in Linear's agent model
+   */
+  async updateAgentSessionExternalUrl(
+    sessionId: string,
+    externalLink: string
+  ): Promise<void> {
+    try {
+      await this.withRetry(async (client) => {
+        await client.agentSessionUpdateExternalUrl(sessionId, { externalLink });
+        logger.debug({ sessionId, externalLink }, 'Updated agent session external URL');
+      });
+    } catch (error) {
+      logger.debug({ sessionId, error }, 'Failed to update agent session external URL');
+    }
+  }
+
+  /**
+   * Add an activity to an agent session
+   * Activities provide real-time visibility into what the agent is doing
+   * See: https://linear.app/developers/agent-interaction#activity-content-payload
+   */
+  async addAgentActivity(
+    sessionId: string,
+    type: 'thought' | 'action' | 'response' | 'error',
+    content: {
+      message?: string;
+      action?: string;
+      parameter?: string;
+      result?: string;
+    },
+    options?: {
+      ephemeral?: boolean;
+    }
+  ): Promise<void> {
+    try {
+      await this.withRetry(async (client) => {
+        // Build content payload based on activity type
+        // See https://linear.app/developers/agent-interaction#activity-content-payload
+        const contentPayload: Record<string, unknown> = { type };
+
+        if (type === 'thought' && content.message) {
+          contentPayload.message = content.message;
+        } else if (type === 'action') {
+          contentPayload.action = content.action || 'processing';
+          contentPayload.parameter = content.parameter || '';
+          if (content.result) {
+            contentPayload.result = content.result;
+          }
+        } else if (type === 'response' && content.message) {
+          contentPayload.message = content.message;
+        } else if (type === 'error' && content.message) {
+          contentPayload.message = content.message;
+        }
+
+        await client.createAgentActivity({
+          agentSessionId: sessionId,
+          content: contentPayload,
+          ephemeral: options?.ephemeral,
+        });
+        logger.debug({ sessionId, type }, 'Added agent activity');
+      });
+    } catch (error) {
+      logger.debug({ sessionId, error }, 'Failed to add agent activity');
+    }
+  }
+
+  /**
+   * Complete an agent session by posting a response activity
+   */
+  async completeAgentSession(sessionId: string, summary?: string): Promise<void> {
+    try {
+      await this.addAgentActivity(sessionId, 'response', {
+        message: summary || 'Task completed successfully',
+      });
+      logger.info({ sessionId }, 'Completed agent session');
+    } catch (error) {
+      logger.debug({ sessionId, error }, 'Failed to complete agent session');
+    }
+  }
+
+  /**
+   * Mark an agent session as errored
+   */
+  async errorAgentSession(sessionId: string, errorMessage?: string): Promise<void> {
+    try {
+      await this.addAgentActivity(sessionId, 'error', {
+        message: errorMessage || 'Task failed',
+      });
+      logger.info({ sessionId }, 'Marked agent session as errored');
+    } catch (error) {
+      logger.debug({ sessionId, error }, 'Failed to mark agent session as errored');
+    }
   }
 
   private async mapIssueToTicket(issue: Issue): Promise<TicketInfo> {

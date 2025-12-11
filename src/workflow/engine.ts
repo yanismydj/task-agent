@@ -34,6 +34,9 @@ const TASK_AGENT_TAG = '[TaskAgent]';
 const APPROVAL_TAG = '[TaskAgent Proposal]';
 const WORKING_TAG = '[TaskAgent Working]';
 
+// Track active agent sessions per ticket
+const agentSessions = new Map<string, string>(); // ticketId -> sessionId
+
 interface ProcessingResult {
   ticketId: string;
   ticketIdentifier: string;
@@ -401,6 +404,19 @@ export class WorkflowEngine {
     ticketStateMachine.transition(ticket.id, 'executing', 'Prompt generated');
     await this.syncLabel(ticket.id, 'executing');
 
+    // Set the Linear issue state to "In Progress"
+    await linearClient.setIssueInProgress(ticket.id);
+
+    // Create an agent session for real-time visibility in Linear UI
+    const session = await linearClient.createAgentSession(ticket.id);
+    if (session) {
+      agentSessions.set(ticket.id, session.id);
+      // Post initial activity
+      await linearClient.addAgentActivity(session.id, 'thought', {
+        message: 'Starting work on this ticket...',
+      });
+    }
+
     await linearClient.addComment(ticket.id, `${WORKING_TAG}\n\nStarting work on this ticket...`);
 
     return this.handleExecuting(ticket, 'generating_prompt');
@@ -421,6 +437,17 @@ export class WorkflowEngine {
       logger.error({ ticketId: ticket.identifier }, 'Missing prompt output');
       ticketStateMachine.transition(ticket.id, 'generating_prompt', 'Missing prompt');
       return this.createResult(ticket, previousState, 'generating_prompt', 'missing-prompt');
+    }
+
+    // Get agent session if available
+    const sessionId = agentSessions.get(ticket.id);
+
+    // Update agent activity to show we're executing
+    if (sessionId) {
+      await linearClient.addAgentActivity(sessionId, 'action', {
+        action: 'executing',
+        parameter: 'Running Claude Code agent',
+      });
     }
 
     const worktree = await worktreeManager.create(ticket.identifier);
@@ -446,6 +473,14 @@ export class WorkflowEngine {
 
       if (retryCount < config.agents.maxRetries) {
         ticketStateMachine.setMetadata(ticket.id, 'retryCount', retryCount + 1);
+
+        // Update agent activity to show retry
+        if (sessionId) {
+          await linearClient.addAgentActivity(sessionId, 'thought', {
+            message: `Attempt ${retryCount + 1} failed: ${error}. Retrying...`,
+          });
+        }
+
         await linearClient.addComment(
           ticket.id,
           `${TASK_AGENT_TAG} Attempt ${retryCount + 1} failed: ${error}\n\nRetrying...`
@@ -455,6 +490,13 @@ export class WorkflowEngine {
 
       ticketStateMachine.transition(ticket.id, 'failed', error);
       await this.syncLabel(ticket.id, 'failed');
+
+      // Mark agent session as errored
+      if (sessionId) {
+        await linearClient.errorAgentSession(sessionId, `Failed after ${retryCount + 1} attempts: ${error}`);
+        agentSessions.delete(ticket.id);
+      }
+
       await linearClient.addComment(
         ticket.id,
         `${TASK_AGENT_TAG} Failed after ${retryCount + 1} attempts.\n\n**Error**: ${error}\n\nEscalating for human review.`
@@ -465,6 +507,18 @@ export class WorkflowEngine {
     ticketStateMachine.storeAgentOutput(ticket.id, 'code-executor', result.data);
     ticketStateMachine.transition(ticket.id, 'completed', 'Execution successful');
     await this.syncLabel(ticket.id, 'completed');
+
+    // Set the Linear issue state to "Done"
+    await linearClient.setIssueDone(ticket.id);
+
+    // Complete the agent session
+    if (sessionId) {
+      const summary = result.data.prUrl
+        ? `Work completed. PR: ${result.data.prUrl}`
+        : 'Work completed successfully';
+      await linearClient.completeAgentSession(sessionId, summary);
+      agentSessions.delete(ticket.id);
+    }
 
     let comment = `${TASK_AGENT_TAG} Work completed successfully!`;
     if (result.data.prUrl) {
