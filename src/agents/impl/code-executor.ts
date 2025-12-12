@@ -1,4 +1,5 @@
 import { spawn, ChildProcess, execSync } from 'node:child_process';
+import fs from 'node:fs';
 import { config } from '../../config.js';
 import { createChildLogger } from '../../utils/logger.js';
 
@@ -118,8 +119,19 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
         ? ['@anthropic-ai/claude-code', '--print', '--dangerously-skip-permissions', prompt]
         : ['--print', '--dangerously-skip-permissions', prompt];
 
+      // Verify worktree exists before spawning
+      if (!fs.existsSync(worktreePath)) {
+        reject(new AgentExecutionError(
+          'code-executor',
+          ticketIdentifier,
+          `Worktree path does not exist: ${worktreePath}. The worktree may need to be recreated.`,
+          false // Don't retry - worktree issue needs to be fixed
+        ));
+        return;
+      }
+
       logger.info(
-        { ticketId: ticketIdentifier, claudePath: CLAUDE_PATH, useNpx: USE_NPX },
+        { ticketId: ticketIdentifier, claudePath: CLAUDE_PATH, useNpx: USE_NPX, cwd: worktreePath },
         'Spawning Claude Code'
       );
 
@@ -129,7 +141,6 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
         {
           cwd: worktreePath,
           env: { ...process.env },
-          shell: true, // Use shell to ensure PATH is resolved
         }
       );
 
