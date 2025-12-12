@@ -21,6 +21,11 @@ const ConfigSchema = z.object({
     auth: LinearAuthSchema,
     teamId: z.string().min(1, 'LINEAR_TEAM_ID is required'),
     projectId: z.string().optional(),
+    webhookSecret: z.string().optional(), // For verifying webhook signatures
+  }),
+  webhook: z.object({
+    enabled: z.boolean().default(false),
+    port: z.number().int().min(1).max(65535).default(3000),
   }),
   github: z.object({
     repo: z.string().min(1, 'GITHUB_REPO is required (format: owner/repo)'),
@@ -79,6 +84,11 @@ function loadConfig(): Config {
       auth: linearAuth,
       teamId: process.env['LINEAR_TEAM_ID'] ?? '',
       projectId: process.env['LINEAR_PROJECT_ID'] || undefined,
+      webhookSecret: process.env['LINEAR_WEBHOOK_SECRET'] || undefined,
+    },
+    webhook: {
+      enabled: process.env['WEBHOOK_ENABLED'] === 'true',
+      port: parseInt(process.env['WEBHOOK_PORT'] || '3000', 10),
     },
     github: {
       repo: process.env['GITHUB_REPO'] ?? '',

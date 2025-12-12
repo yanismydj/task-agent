@@ -27,6 +27,9 @@ logs/
 
 # Task Agent working directories and cache
 .task-agent/
+.task-agent-queue.db
+.task-agent-queue.db-wal
+.task-agent-queue.db-shm
 
 # Beads issue tracking (local only)
 .beads/

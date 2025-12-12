@@ -5,6 +5,7 @@ import { stateManager } from './linear/state.js';
 import { linearClient } from './linear/client.js';
 import { initializeAuth, getAuth } from './linear/auth.js';
 import { queueManager, queueProcessor, queueScheduler } from './queue/index.js';
+import { webhookServer, createWebhookHandlers } from './webhook/index.js';
 
 async function checkOAuthAuthorization(): Promise<void> {
   if (config.linear.auth.mode !== 'oauth') {
@@ -75,6 +76,11 @@ async function main() {
     logger.info('Shutting down...');
     clearInterval(heartbeatInterval);
 
+    // Stop webhook server
+    if (config.webhook.enabled) {
+      await webhookServer.stop();
+    }
+
     // Stop queue processing
     queueScheduler.stop();
     queueProcessor.stop();
@@ -111,11 +117,21 @@ async function main() {
     );
   }
 
+  // Start webhook server if enabled
+  if (config.webhook.enabled) {
+    webhookServer.setHandlers(createWebhookHandlers());
+    await webhookServer.start();
+    logger.info(
+      { port: webhookServer.getPort() },
+      'Webhook server started - use ngrok to expose: ngrok http ' + webhookServer.getPort()
+    );
+  }
+
   // Start the queue processor (processes tasks from queues)
   queueProcessor.start(1000); // Process every 1 second
 
   // Start the scheduler (polls Linear and enqueues work)
-  // Poll every 60 seconds, check responses every 30 seconds
+  // With webhooks enabled, we can poll much less frequently
   // If rate limited, delay the initial poll
   if (waitSeconds > 0) {
     logger.info({ delaySeconds: Math.min(waitSeconds, 60) }, 'Delaying scheduler start due to rate limit');
@@ -127,7 +143,10 @@ async function main() {
     queueScheduler.start();
   }
 
-  logger.info('Daemon running with task queue system');
+  logger.info({
+    webhooksEnabled: config.webhook.enabled,
+    webhookPort: config.webhook.enabled ? config.webhook.port : undefined,
+  }, 'Daemon running with task queue system');
 }
 
 main().catch(async (error) => {
