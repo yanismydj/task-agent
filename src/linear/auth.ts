@@ -59,6 +59,12 @@ export class LinearAuth {
         const data = fs.readFileSync(this.tokenStorePath, 'utf-8');
         this.tokenData = JSON.parse(data) as TokenData;
         logger.debug('Loaded stored OAuth token');
+
+        // Security warning: token is stored in plaintext
+        logger.warn(
+          { tokenPath: this.tokenStorePath },
+          'OAuth token stored in plaintext. Ensure this file is not committed to version control and has restricted permissions (chmod 600).'
+        );
       }
     } catch (error) {
       logger.warn({ error }, 'Failed to load stored token');

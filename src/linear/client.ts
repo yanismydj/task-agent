@@ -4,6 +4,8 @@ import {
   Comment,
   RateLimitPayload,
   AgentSession,
+  LinearError,
+  InvalidInputLinearError,
 } from '@linear/sdk';
 import { config } from '../config.js';
 import { createChildLogger } from '../utils/logger.js';
@@ -40,6 +42,23 @@ const BASE_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 60000;
 const MAX_RETRIES = 3;
 
+// Estimated complexity costs per operation type
+// These are estimates based on typical query patterns
+// Actual complexity depends on fields requested and pagination
+const COMPLEXITY_ESTIMATES: Record<string, number> = {
+  'getTicket': 10,
+  'getTickets': 100, // Per page of 50
+  'getComments': 50,
+  'addComment': 5,
+  'updateIssue': 10,
+  'syncLabels': 50,
+  'createAgentSession': 15,
+  'addAgentActivity': 5,
+  'checkRateLimit': 5,
+  'getProjectLead': 20,
+  'cacheWorkflowStates': 30,
+};
+
 export class LinearApiClient {
   private client: LinearClient | null = null;
   private teamId: string;
@@ -48,6 +67,10 @@ export class LinearApiClient {
   private rateLimitResetAt: Date | null = null;
   private lastRateLimitInfo: RateLimitInfo | null = null;
   private consecutiveErrors = 0;
+
+  // Complexity tracking for debugging
+  private estimatedComplexityUsed = 0;
+  private complexityTrackingStartTime = Date.now();
 
   constructor() {
     this.teamId = config.linear.teamId;
@@ -234,6 +257,37 @@ export class LinearApiClient {
   }
 
   /**
+   * Log estimated complexity for an operation
+   * Helps track API usage and identify optimization opportunities
+   */
+  private logComplexity(operation: string, multiplier = 1): void {
+    const estimate = (COMPLEXITY_ESTIMATES[operation] ?? 20) * multiplier;
+    this.estimatedComplexityUsed += estimate;
+
+    // Reset tracking every hour (matching Linear's rate limit window)
+    const hoursSinceStart = (Date.now() - this.complexityTrackingStartTime) / (60 * 60 * 1000);
+    if (hoursSinceStart >= 1) {
+      logger.debug(
+        { estimatedComplexity: this.estimatedComplexityUsed, hourlyLimit: COMPLEXITY_PER_HOUR },
+        'Resetting complexity tracking (new hour)'
+      );
+      this.estimatedComplexityUsed = estimate;
+      this.complexityTrackingStartTime = Date.now();
+    }
+
+    logger.debug(
+      {
+        operation,
+        estimatedCost: estimate,
+        totalEstimated: this.estimatedComplexityUsed,
+        hourlyLimit: COMPLEXITY_PER_HOUR,
+        percentUsed: ((this.estimatedComplexityUsed / COMPLEXITY_PER_HOUR) * 100).toFixed(1) + '%',
+      },
+      'API complexity estimate'
+    );
+  }
+
+  /**
    * Calculate exponential backoff delay with jitter
    * Based on Linear's recommendation for handling rate limits
    */
@@ -338,19 +392,76 @@ export class LinearApiClient {
 
   /**
    * Determine if an error is transient and should be retried
+   * Uses LinearError types when available for more reliable detection
    */
-  private isTransientError(error: Error): boolean {
-    const message = error.message.toLowerCase();
-    return (
-      message.includes('network') ||
-      message.includes('timeout') ||
-      message.includes('econnreset') ||
-      message.includes('econnrefused') ||
-      message.includes('socket hang up') ||
-      message.includes('503') ||
-      message.includes('502') ||
-      message.includes('504')
-    );
+  private isTransientError(error: unknown): boolean {
+    // Check for Linear SDK specific error types first
+    if (error instanceof LinearError) {
+      // Log structured error info for debugging
+      logger.debug(
+        {
+          errorType: error.name,
+          message: error.message,
+          // LinearError may have additional properties
+          ...(error.errors ? { errors: error.errors } : {}),
+        },
+        'LinearError detected'
+      );
+
+      // Server errors (5xx) are transient
+      // Note: LinearError types may include status information
+      const message = error.message.toLowerCase();
+      if (message.includes('503') || message.includes('502') || message.includes('504')) {
+        return true;
+      }
+
+      // Check for network errors in the underlying cause (fetch failed, ECONNRESET, etc.)
+      // LinearError wraps the raw error in a 'raw' property
+      const rawError = (error as unknown as { raw?: Error }).raw;
+      if (rawError) {
+        const rawMessage = rawError.message?.toLowerCase() || '';
+        const causeMessage = (rawError.cause as Error)?.message?.toLowerCase() || '';
+        if (
+          rawMessage.includes('fetch failed') ||
+          rawMessage.includes('network') ||
+          causeMessage.includes('econnreset') ||
+          causeMessage.includes('econnrefused') ||
+          causeMessage.includes('etimedout')
+        ) {
+          logger.debug({ rawMessage, causeMessage }, 'Network error detected in LinearError');
+          return true;
+        }
+      }
+
+      // Some LinearErrors are not transient (e.g., validation errors)
+      return false;
+    }
+
+    // InvalidInputLinearError is never transient - it's a client-side error
+    if (error instanceof InvalidInputLinearError) {
+      logger.warn(
+        { error: error.message },
+        'Invalid input error - will not retry'
+      );
+      return false;
+    }
+
+    // Fallback to string matching for non-Linear errors (network issues, etc.)
+    if (error instanceof Error) {
+      const message = error.message.toLowerCase();
+      return (
+        message.includes('network') ||
+        message.includes('timeout') ||
+        message.includes('econnreset') ||
+        message.includes('econnrefused') ||
+        message.includes('socket hang up') ||
+        message.includes('503') ||
+        message.includes('502') ||
+        message.includes('504')
+      );
+    }
+
+    return false;
   }
 
   async getTickets(): Promise<TicketInfo[]> {
@@ -365,21 +476,52 @@ export class LinearApiClient {
       filter['project'] = { id: { eq: this.projectId } };
     }
 
-    return this.withRetry(async (client) => {
-      const issues = await client.issues({ filter });
+    // Use pagination to handle teams with many issues
+    // Linear defaults to 50 items, we fetch in batches until all are retrieved
+    const allTickets: TicketInfo[] = [];
+    let cursor: string | undefined;
+    let hasMore = true;
+    const PAGE_SIZE = 50;
+    let pageCount = 0;
 
-      const tickets: TicketInfo[] = [];
-      for (const issue of issues.nodes) {
-        const ticket = await this.mapIssueToTicket(issue);
-        tickets.push(ticket);
+    while (hasMore) {
+      const result = await this.withRetry(async (client) => {
+        const issues = await client.issues({
+          filter,
+          first: PAGE_SIZE,
+          after: cursor,
+        });
+
+        const tickets: TicketInfo[] = [];
+        for (const issue of issues.nodes) {
+          const ticket = await this.mapIssueToTicket(issue);
+          tickets.push(ticket);
+        }
+
+        return {
+          tickets,
+          hasNextPage: issues.pageInfo.hasNextPage,
+          endCursor: issues.pageInfo.endCursor,
+        };
+      });
+
+      pageCount++;
+      this.logComplexity('getTickets', 1); // Log complexity per page
+
+      allTickets.push(...result.tickets);
+      hasMore = result.hasNextPage;
+      cursor = result.endCursor ?? undefined;
+
+      if (hasMore) {
+        logger.debug({ fetched: allTickets.length, cursor }, 'Fetching next page of tickets');
       }
+    }
 
-      // Cache all fetched tickets
-      linearCache.upsertTickets(tickets);
+    // Cache all fetched tickets
+    linearCache.upsertTickets(allTickets);
 
-      logger.info({ count: tickets.length }, 'Fetched tickets from Linear');
-      return tickets;
-    });
+    logger.info({ count: allTickets.length }, 'Fetched tickets from Linear');
+    return allTickets;
   }
 
   /**
@@ -500,9 +642,29 @@ export class LinearApiClient {
 
   async addComment(issueId: string, body: string): Promise<void> {
     logger.debug({ issueId }, 'Adding comment to ticket');
-    await this.withRetry(async (client) => {
-      await client.createComment({ issueId, body });
+    this.logComplexity('addComment');
+
+    const result = await this.withRetry(async (client) => {
+      const commentPayload = await client.createComment({ issueId, body });
+      const comment = await commentPayload.comment;
+      return comment;
     });
+
+    // Cache the comment locally to prevent duplicate detection issues
+    if (result) {
+      linearCache.upsertComment(issueId, {
+        id: result.id,
+        body: body,
+        user: {
+          id: 'taskagent',
+          name: 'TaskAgent',
+          isBot: true,
+        },
+        createdAt: result.createdAt,
+        updatedAt: result.updatedAt,
+      });
+    }
+
     logger.info({ issueId }, 'Added comment to ticket');
   }
 
@@ -570,6 +732,51 @@ export class LinearApiClient {
         await client.updateIssue(issueId, { labelIds: newLabelIds });
         logger.info({ issueId, labelName }, 'Removed label from ticket');
       }
+    });
+  }
+
+  /**
+   * Set labels on an issue efficiently - removes specified labels and adds a new one in a single API call
+   * This is much more efficient than calling removeLabel/addLabel multiple times
+   */
+  async syncTaskAgentLabel(issueId: string, newLabel: string | null, labelsToRemove: string[]): Promise<void> {
+    this.logComplexity('syncLabels');
+
+    await this.withRetry(async (client) => {
+      const issue = await client.issue(issueId);
+      const currentLabels = await issue.labels();
+      const team = await client.team(this.teamId);
+      const teamLabels = await team.labels();
+
+      // Start with current label IDs, filtering out the ones we want to remove
+      const labelsToRemoveSet = new Set(labelsToRemove);
+      let newLabelIds = currentLabels.nodes
+        .filter((l) => !labelsToRemoveSet.has(l.name))
+        .map((l) => l.id);
+
+      // Add the new label if specified
+      if (newLabel) {
+        let label = teamLabels.nodes.find((l) => l.name === newLabel);
+        if (!label) {
+          // Create the label if it doesn't exist
+          const result = await client.createIssueLabel({
+            teamId: this.teamId,
+            name: newLabel,
+          });
+          const createdLabel = await result.issueLabel;
+          if (!createdLabel) {
+            throw new Error(`Failed to create label: ${newLabel}`);
+          }
+          label = createdLabel;
+        }
+        if (!newLabelIds.includes(label.id)) {
+          newLabelIds.push(label.id);
+        }
+      }
+
+      // Single API call to update all labels
+      await client.updateIssue(issueId, { labelIds: newLabelIds });
+      logger.info({ issueId, newLabel, removed: labelsToRemove.length }, 'Synced task-agent labels');
     });
   }
 

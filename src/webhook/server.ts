@@ -2,12 +2,18 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { createChildLogger } from '../utils/logger.js';
 import { config } from '../config.js';
+import {
+  isWebhookDeliveryProcessed,
+  recordWebhookDelivery,
+  markWebhookDeliveryProcessed,
+  cleanupOldWebhookDeliveries,
+} from '../queue/database.js';
 
 const logger = createChildLogger({ module: 'webhook-server' });
 
 // Linear webhook event types we care about
 type WebhookAction = 'create' | 'update' | 'remove';
-type WebhookType = 'Issue' | 'Comment' | 'IssueLabel' | 'Project';
+type WebhookType = 'Issue' | 'Comment' | 'IssueLabel' | 'Project' | 'Reaction';
 
 export interface LinearWebhookPayload {
   action: WebhookAction;
@@ -45,11 +51,24 @@ export interface WebhookCommentData {
   updatedAt: string;
 }
 
+// Emoji reaction data from webhook
+export interface WebhookReactionData {
+  id: string;
+  emoji: string;
+  userId: string;
+  user?: { id: string; name: string; isMe?: boolean };
+  // Reaction can be on issue or comment
+  issueId?: string;
+  commentId?: string;
+  createdAt: string;
+}
+
 export interface WebhookHandlers {
   onIssueUpdate?: (data: WebhookIssueData) => Promise<void>;
   onCommentCreate?: (data: WebhookCommentData) => Promise<void>;
   onCommentUpdate?: (data: WebhookCommentData) => Promise<void>;
   onIssueLabelChange?: (data: Record<string, unknown>) => Promise<void>;
+  onReactionCreate?: (data: WebhookReactionData) => Promise<void>;
 }
 
 export class WebhookServer {
@@ -57,6 +76,7 @@ export class WebhookServer {
   private port: number;
   private signingSecret: string | null;
   private handlers: WebhookHandlers = {};
+  private cleanupInterval: NodeJS.Timeout | null = null;
 
   constructor(port?: number, signingSecret?: string) {
     this.port = port ?? config.webhook.port;
@@ -73,8 +93,14 @@ export class WebhookServer {
    */
   private verifySignature(payload: string, signature: string | undefined): boolean {
     if (!this.signingSecret) {
-      logger.warn('No webhook signing secret configured, skipping verification');
-      return true; // Allow if no secret configured (dev mode)
+      // Only allow unsigned webhooks in development mode with explicit flag
+      if (config.isDevelopment && config.webhook.allowUnsigned) {
+        logger.warn('Allowing unsigned webhook in development mode (WEBHOOK_ALLOW_UNSIGNED=true)');
+        return true;
+      }
+      // In production or without explicit flag, require secret
+      logger.error('Webhook signing secret is required. Set LINEAR_WEBHOOK_SECRET or enable WEBHOOK_ALLOW_UNSIGNED for development.');
+      return false;
     }
 
     if (!signature) {
@@ -122,6 +148,7 @@ export class WebhookServer {
         req.on('end', async () => {
           const body = Buffer.concat(chunks).toString();
           const signature = req.headers['linear-signature'] as string | undefined;
+          const deliveryId = req.headers['linear-delivery'] as string | undefined;
 
           // Verify signature
           if (!this.verifySignature(body, signature)) {
@@ -134,17 +161,38 @@ export class WebhookServer {
           try {
             const payload = JSON.parse(body) as LinearWebhookPayload;
 
+            // Check for duplicate delivery (idempotency)
+            const effectiveDeliveryId = deliveryId || payload.webhookId;
+            if (effectiveDeliveryId) {
+              if (isWebhookDeliveryProcessed(effectiveDeliveryId)) {
+                logger.debug({ deliveryId: effectiveDeliveryId }, 'Duplicate webhook delivery, skipping');
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ received: true, duplicate: true }));
+                return;
+              }
+
+              // Record delivery before processing (even if it might fail, to prevent duplicates)
+              const isNew = recordWebhookDelivery(effectiveDeliveryId, payload.type);
+              if (!isNew) {
+                logger.debug({ deliveryId: effectiveDeliveryId }, 'Webhook delivery already recorded');
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ received: true, duplicate: true }));
+                return;
+              }
+            }
+
             logger.info(
               {
                 type: payload.type,
                 action: payload.action,
                 webhookId: payload.webhookId,
+                deliveryId: effectiveDeliveryId,
               },
               'Received webhook'
             );
 
             // Process webhook asynchronously
-            this.handleWebhook(payload).catch((err) => {
+            this.handleWebhook(payload, effectiveDeliveryId).catch((err) => {
               logger.error({ error: err }, 'Error processing webhook');
             });
 
@@ -163,6 +211,19 @@ export class WebhookServer {
 
       this.server.listen(this.port, () => {
         logger.info({ port: this.port }, 'Webhook server started');
+
+        // Start periodic cleanup of old webhook deliveries (every hour)
+        this.cleanupInterval = setInterval(() => {
+          try {
+            const deleted = cleanupOldWebhookDeliveries();
+            if (deleted > 0) {
+              logger.debug({ deleted }, 'Cleaned up old webhook deliveries');
+            }
+          } catch (error) {
+            logger.error({ error }, 'Failed to cleanup webhook deliveries');
+          }
+        }, 60 * 60 * 1000); // 1 hour
+
         resolve();
       });
     });
@@ -173,6 +234,12 @@ export class WebhookServer {
    */
   stop(): Promise<void> {
     return new Promise((resolve) => {
+      // Stop cleanup interval
+      if (this.cleanupInterval) {
+        clearInterval(this.cleanupInterval);
+        this.cleanupInterval = null;
+      }
+
       if (this.server) {
         this.server.close(() => {
           logger.info('Webhook server stopped');
@@ -187,7 +254,7 @@ export class WebhookServer {
   /**
    * Handle incoming webhook based on type and action
    */
-  private async handleWebhook(payload: LinearWebhookPayload): Promise<void> {
+  private async handleWebhook(payload: LinearWebhookPayload, deliveryId?: string): Promise<void> {
     const { type, action, data } = payload;
 
     try {
@@ -212,11 +279,26 @@ export class WebhookServer {
           }
           break;
 
+        case 'Reaction':
+          if (action === 'create' && this.handlers.onReactionCreate) {
+            await this.handlers.onReactionCreate(data as unknown as WebhookReactionData);
+          }
+          break;
+
         default:
           logger.debug({ type, action }, 'Unhandled webhook type');
       }
+
+      // Mark delivery as fully processed
+      if (deliveryId) {
+        markWebhookDeliveryProcessed(deliveryId);
+      }
     } catch (error) {
       logger.error({ error, type, action }, 'Error in webhook handler');
+      // Still mark as processed to prevent retry loops on persistent errors
+      if (deliveryId) {
+        markWebhookDeliveryProcessed(deliveryId);
+      }
     }
   }
 

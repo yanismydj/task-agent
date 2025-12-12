@@ -52,6 +52,7 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
 
   private runningProcesses: Map<string, { process: ChildProcess; ticketId: string; recentOutput: string[]; startedAt: Date }> = new Map();
   private readonly MAX_OUTPUT_LINES = 5; // Keep last N lines for UI display
+  private jsonBuffer: Map<string, string> = new Map(); // Buffer for incomplete JSON lines
 
   validateInput(input: unknown): CodeExecutorInput {
     return this.inputSchema.parse(input);
@@ -173,7 +174,7 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
         const text = data.toString();
         output += text;
         // Update recent output for UI display
-        this.appendRecentOutput(processEntry, text);
+        this.appendRecentOutput(processEntry, text, processId);
         logger.debug({ ticketId: ticketIdentifier, bytes: text.length }, 'Claude Code output');
       });
 
@@ -181,13 +182,14 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
         const text = data.toString();
         output += text;
         // Update recent output for UI display (stderr too)
-        this.appendRecentOutput(processEntry, text);
+        this.appendRecentOutput(processEntry, text, processId);
         logger.warn({ ticketId: ticketIdentifier, stderr: text.slice(0, 200) }, 'Claude Code stderr');
       });
 
       childProcess.on('close', (code: number | null) => {
         clearTimeout(timeout);
         this.runningProcesses.delete(processId);
+        this.clearJsonBuffer(processId);
 
         const result = this.parseOutput(output, code, ticketIdentifier);
         resolve(result);
@@ -196,6 +198,7 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
       childProcess.on('error', (error: Error) => {
         clearTimeout(timeout);
         this.runningProcesses.delete(processId);
+        this.clearJsonBuffer(processId);
         reject(new AgentExecutionError(
           'code-executor',
           ticketIdentifier,
@@ -390,17 +393,29 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
    * Append text to recent output, keeping only the last N lines
    * Handles stream-json format from Claude Code
    */
-  private appendRecentOutput(entry: { recentOutput: string[] }, text: string): void {
-    // Split into lines and filter out empty ones
-    const newLines = text.split('\n').filter(line => line.trim().length > 0);
+  private appendRecentOutput(entry: { recentOutput: string[]; ticketId?: string }, text: string, processId?: string): void {
+    // Get or create buffer for this process
+    const bufferId = processId || 'default';
+    let buffer = this.jsonBuffer.get(bufferId) || '';
+    buffer += text;
 
-    for (const line of newLines) {
+    // Process complete lines (ending with newline)
+    const lines = buffer.split('\n');
+
+    // Keep the last incomplete line in the buffer
+    const lastLine = lines.pop() || '';
+    this.jsonBuffer.set(bufferId, lastLine);
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
       // Try to parse as JSON (stream-json format)
-      const displayLine = this.extractDisplayLine(line);
+      const displayLine = this.extractDisplayLine(trimmed);
       if (!displayLine) continue;
 
       // Truncate long lines for display
-      const truncated = displayLine.length > 100 ? displayLine.slice(0, 100) + '...' : displayLine;
+      const truncated = displayLine.length > 80 ? displayLine.slice(0, 77) + '...' : displayLine;
       entry.recentOutput.push(truncated);
 
       // Keep only the last N lines
@@ -408,6 +423,13 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
         entry.recentOutput.shift();
       }
     }
+  }
+
+  /**
+   * Clear the JSON buffer for a process (call on process exit)
+   */
+  private clearJsonBuffer(processId: string): void {
+    this.jsonBuffer.delete(processId);
   }
 
   /**
@@ -423,24 +445,58 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
         const type = json.type as string | undefined;
 
         if (type === 'assistant' && json.message) {
-          const msg = json.message as { content?: Array<{ type: string; text?: string; name?: string }> };
+          const msg = json.message as { content?: Array<{ type: string; text?: string; name?: string; input?: Record<string, unknown> }> };
           if (msg.content) {
             for (const block of msg.content) {
               if (block.type === 'text' && block.text) {
-                // Return first 100 chars of assistant text
-                return `💬 ${block.text.slice(0, 100)}`;
+                // Clean up the text - remove markdown formatting for display
+                const cleanText = block.text
+                  .replace(/```[\s\S]*?```/g, '[code]') // Replace code blocks
+                  .replace(/\n+/g, ' ') // Collapse newlines
+                  .trim();
+                return `💬 ${cleanText.slice(0, 80)}`;
               }
               if (block.type === 'tool_use' && block.name) {
-                return `🔧 Using: ${block.name}`;
+                // Show tool name with relevant context from input
+                const input = block.input;
+                let context = '';
+                if (input) {
+                  // Extract useful context based on tool type
+                  if (block.name === 'Read' && input.file_path) {
+                    const filePath = String(input.file_path);
+                    context = ` → ${filePath.split('/').slice(-2).join('/')}`;
+                  } else if (block.name === 'Write' && input.file_path) {
+                    const filePath = String(input.file_path);
+                    context = ` → ${filePath.split('/').slice(-2).join('/')}`;
+                  } else if (block.name === 'Edit' && input.file_path) {
+                    const filePath = String(input.file_path);
+                    context = ` → ${filePath.split('/').slice(-2).join('/')}`;
+                  } else if (block.name === 'Bash' && input.command) {
+                    const cmd = String(input.command).slice(0, 40);
+                    context = ` → ${cmd}${String(input.command).length > 40 ? '...' : ''}`;
+                  } else if (block.name === 'Grep' && input.pattern) {
+                    context = ` → "${input.pattern}"`;
+                  } else if (block.name === 'Glob' && input.pattern) {
+                    context = ` → ${input.pattern}`;
+                  }
+                }
+                return `🔧 ${block.name}${context}`;
               }
             }
           }
         }
 
+        // Skip 'user' type messages - these are tool results and aren't useful to display
+        if (type === 'user') {
+          return null;
+        }
+
         if (type === 'result') {
           const result = json.result as string | undefined;
           if (result) {
-            return `✅ ${result.slice(0, 80)}`;
+            // Clean up result text
+            const cleanResult = result.replace(/\n+/g, ' ').trim();
+            return `✅ ${cleanResult.slice(0, 60)}`;
           }
           if (json.is_error) {
             return `❌ Error: ${(json.error as string) || 'Unknown error'}`;
@@ -448,12 +504,12 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
         }
 
         if (type === 'system' && json.message) {
-          return `ℹ️ ${String(json.message).slice(0, 80)}`;
+          return `ℹ️ ${String(json.message).slice(0, 60)}`;
         }
 
-        // Generic fallback for other types
-        if (type) {
-          return `[${type}]`;
+        // Skip other internal message types that aren't useful to display
+        if (type === 'content_block_start' || type === 'content_block_delta' || type === 'content_block_stop') {
+          return null;
         }
 
         return null;
@@ -463,7 +519,10 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
     }
 
     // Plain text output (non-JSON)
-    return line.trim();
+    const trimmed = line.trim();
+    // Skip empty or very short lines
+    if (trimmed.length < 3) return null;
+    return trimmed;
   }
 }
 

@@ -7,6 +7,36 @@ import type { TicketInfo } from './types.js';
 
 const logger = createChildLogger({ module: 'linear-state' });
 
+/**
+ * TODO: State Management Consolidation
+ *
+ * This module currently implements a dual state tracking approach:
+ *
+ * 1. **State Project Issues** (this file):
+ *    - Uses a "TaskAgent State" project in Linear
+ *    - Creates issues for: Daemon status, Agent sessions, Error reports
+ *    - Pros: Visible in Linear UI, persists across restarts
+ *    - Cons: Creates many issues, API-intensive, separate from actual tickets
+ *
+ * 2. **Linear Agent Sessions** (src/linear/client.ts):
+ *    - Uses Linear's native Agent Session API
+ *    - Tracks agent work lifecycle with proper activity logging
+ *    - Pros: Native Linear feature, better UI integration
+ *    - Cons: Added after state project was implemented
+ *
+ * **Future Plan:**
+ * - Consolidate agent session tracking to use ONLY Linear's native Agent Sessions
+ * - Keep the State Project for daemon status and error reporting (no native alternative)
+ * - Remove duplicate AgentSession tracking from this file
+ * - This will reduce API calls and simplify the codebase
+ *
+ * **Migration Steps:**
+ * 1. Verify Linear Agent Sessions API is stable (currently in Developer Preview)
+ * 2. Remove createAgentSession/updateAgentSession/getActiveAgentSessions from this file
+ * 3. Update processor.ts to only use linearClient agent session methods
+ * 4. Clean up old "Agent Session:" issues in the State Project
+ */
+
 // Label prefixes for TaskAgent state on tickets
 const LABEL_PREFIX = 'ta:';
 const READINESS_LABEL_PREFIX = 'readiness:';
@@ -224,21 +254,37 @@ export class LinearStateManager {
     await this.initialize();
 
     const client = await this.getClient();
-    const issues = await client.issues({
-      filter: {
-        project: { id: { eq: this.stateProjectId! } },
-        title: { startsWith: AGENT_ISSUE_PREFIX },
-        state: { type: { eq: 'started' } },
-      },
-    });
+    const allSessions: AgentSession[] = [];
+    let cursor: string | undefined;
+    let hasMore = true;
+    const PAGE_SIZE = 50;
 
-    return issues.nodes.map((issue) => {
-      try {
-        return JSON.parse(issue.description || '{}') as AgentSession;
-      } catch {
-        return null;
+    // Use pagination to handle many active sessions
+    while (hasMore) {
+      const issues = await client.issues({
+        filter: {
+          project: { id: { eq: this.stateProjectId! } },
+          title: { startsWith: AGENT_ISSUE_PREFIX },
+          state: { type: { eq: 'started' } },
+        },
+        first: PAGE_SIZE,
+        after: cursor,
+      });
+
+      for (const issue of issues.nodes) {
+        try {
+          const session = JSON.parse(issue.description || '{}') as AgentSession;
+          allSessions.push(session);
+        } catch {
+          // Skip invalid session data
+        }
       }
-    }).filter((s): s is AgentSession => s !== null);
+
+      hasMore = issues.pageInfo.hasNextPage;
+      cursor = issues.pageInfo.endCursor ?? undefined;
+    }
+
+    return allSessions;
   }
 
   // ============ Error Reporting ============

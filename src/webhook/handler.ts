@@ -3,9 +3,43 @@ import { linearQueue } from '../queue/linear-queue.js';
 import { queueScheduler } from '../queue/scheduler.js';
 import { config } from '../config.js';
 import { linearCache } from '../linear/cache.js';
-import type { WebhookIssueData, WebhookCommentData, WebhookHandlers } from './server.js';
+import type { WebhookIssueData, WebhookCommentData, WebhookReactionData, WebhookHandlers } from './server.js';
 
 const logger = createChildLogger({ module: 'webhook-handler' });
+
+// Linear retries webhooks after 5 seconds, so we must respond within that time
+// Using 4 seconds gives us a 1 second buffer
+const WEBHOOK_TIMEOUT_MS = 4000;
+
+/**
+ * Execute a handler with a timeout to ensure we respond to Linear within 5 seconds
+ * If the handler takes too long, we log a warning but don't fail the response
+ */
+async function withTimeout<T>(
+  handler: () => Promise<T>,
+  handlerName: string
+): Promise<T | void> {
+  return new Promise((resolve) => {
+    const timeoutId = setTimeout(() => {
+      logger.warn(
+        { handlerName, timeoutMs: WEBHOOK_TIMEOUT_MS },
+        'Webhook handler exceeded timeout - Linear may retry this webhook'
+      );
+      resolve(); // Resolve without waiting for handler
+    }, WEBHOOK_TIMEOUT_MS);
+
+    handler()
+      .then((result) => {
+        clearTimeout(timeoutId);
+        resolve(result);
+      })
+      .catch((error) => {
+        clearTimeout(timeoutId);
+        logger.error({ error, handlerName }, 'Webhook handler error');
+        resolve(); // Don't propagate error - we still responded to Linear
+      });
+  });
+}
 
 // Map Linear priority (0-4) to our priority type
 function mapPriority(linearPriority: number): 0 | 1 | 2 | 3 | 4 {
@@ -136,11 +170,8 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
     return;
   }
 
-  // Check if recently processed
-  if (linearQueue.wasRecentlyProcessed(issueId, 2)) {
-    logger.debug({ issueId }, 'Recently processed, skipping');
-    return;
-  }
+  // Don't skip based on recent processing for webhooks - human responses are important!
+  // The check_response handler will properly detect if there's actually a new response
 
   // Enqueue immediate response check with high priority
   linearQueue.enqueue({
@@ -159,28 +190,148 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
 
 /**
  * Handle comment updates (edits)
- * Useful for when users edit their responses
+ * Useful for when users edit their responses or check checkboxes in TaskAgent questions
  */
 async function handleCommentUpdate(data: WebhookCommentData): Promise<void> {
-  // Ignore TaskAgent comments (webhooks don't have isMe, so check for tags)
-  if (data.body.includes('[TaskAgent]') || data.body.includes('[TaskAgent Proposal]') || data.body.includes('[TaskAgent Working]')) {
+  // Always update the cache with the new comment body (important for checkbox changes)
+  linearCache.upsertComment(data.issueId, {
+    id: data.id,
+    body: data.body,
+    user: data.user ? {
+      id: data.user.id,
+      name: data.user.name,
+      isBot: false, // Webhooks don't indicate bot status
+    } : undefined,
+    createdAt: new Date(data.createdAt),
+    updatedAt: new Date(data.updatedAt),
+  });
+
+  // Check if this is a TaskAgent question comment with checked boxes
+  // When users check checkboxes, the comment body is updated with [X] or [x]
+  const isTaskAgentComment = data.body.includes('[TaskAgent]') ||
+                             data.body.includes('\\[TaskAgent\\]') ||
+                             data.body.includes('[TaskAgent Proposal]') ||
+                             data.body.includes('[TaskAgent Working]');
+
+  if (isTaskAgentComment) {
+    // Check if there are checked boxes (user responded via checkbox)
+    const hasCheckedBoxes = data.body.includes('[X]') || data.body.includes('[x]');
+
+    if (hasCheckedBoxes) {
+      logger.info(
+        { issueId: data.issueId, commentId: data.id },
+        'User checked checkbox in TaskAgent question - treating as response'
+      );
+
+      // Enqueue response check for this ticket
+      const issueId = data.issueId;
+
+      // Check if we already have a response check queued
+      if (linearQueue.hasActiveTask(issueId, 'check_response')) {
+        logger.debug({ issueId }, 'Already have response check queued');
+        return;
+      }
+
+      // Enqueue response check
+      linearQueue.enqueue({
+        ticketId: issueId,
+        ticketIdentifier: `webhook-${issueId}`,
+        taskType: 'check_response',
+        priority: 1, // High priority for human responses
+        inputData: { waitingFor: 'questions' },
+      });
+
+      logger.info({ issueId }, 'Enqueued response check from checkbox update');
+      return;
+    }
+
+    // TaskAgent comment without checked boxes - ignore
+    logger.debug({ issueId: data.issueId, commentId: data.id }, 'TaskAgent comment updated (no checkbox change)');
     return;
   }
 
   logger.debug({ issueId: data.issueId, commentId: data.id }, 'Comment updated');
 
-  // For now, treat edits the same as new comments
-  // Could be smarter about this in the future
+  // For non-TaskAgent comments, treat edits the same as new comments
   await handleCommentCreate(data);
 }
 
 /**
+ * Handle emoji reactions on comments
+ * When a user reacts with 👍 or 👎 to a TaskAgent Proposal comment, treat it as approval/rejection
+ */
+async function handleReactionCreate(data: WebhookReactionData): Promise<void> {
+  // We only care about reactions on comments (approval proposals), not on issues
+  if (!data.commentId) {
+    logger.debug({ reactionId: data.id, emoji: data.emoji }, 'Ignoring reaction on issue (not a comment)');
+    return;
+  }
+
+  // Check if this is a thumbs up/down reaction
+  const emoji = data.emoji;
+  const isApproval = emoji === '👍' || emoji === '+1' || emoji === 'thumbsup';
+  const isRejection = emoji === '👎' || emoji === '-1' || emoji === 'thumbsdown';
+
+  if (!isApproval && !isRejection) {
+    logger.debug({ emoji }, 'Ignoring non-approval emoji reaction');
+    return;
+  }
+
+  logger.info(
+    {
+      commentId: data.commentId,
+      emoji,
+      userId: data.userId,
+      isApproval,
+    },
+    'Received approval emoji reaction'
+  );
+
+  // We need to find which issue this comment belongs to
+  // The reaction webhook may not include issueId, so we need to look it up
+  // For now, we'll fetch it from the Linear API
+  // TODO: Optimize by caching comment -> issue mapping
+
+  // For now, we'll need to query Linear to get the issue ID from the comment
+  // This is a limitation - we may need to adjust the approach
+  // Let's check if issueId is provided in the webhook data
+  if (!data.issueId) {
+    logger.warn({ commentId: data.commentId }, 'Reaction webhook missing issueId - cannot process');
+    return;
+  }
+
+  const issueId = data.issueId;
+
+  // Check if we already have a response check queued
+  if (linearQueue.hasActiveTask(issueId, 'check_response')) {
+    logger.debug({ issueId }, 'Already have response check queued');
+    return;
+  }
+
+  // Enqueue response check with the emoji reaction info
+  linearQueue.enqueue({
+    ticketId: issueId,
+    ticketIdentifier: `webhook-${issueId}`,
+    taskType: 'check_response',
+    priority: 1, // High priority for human responses
+    inputData: {
+      waitingFor: 'approval',
+      emojiReaction: isApproval ? 'approved' : 'rejected',
+    },
+  });
+
+  logger.info({ issueId, emoji }, 'Enqueued response check from emoji reaction');
+}
+
+/**
  * Create webhook handlers configured for TaskAgent
+ * Each handler is wrapped with a timeout to ensure we respond to Linear within 5 seconds
  */
 export function createWebhookHandlers(): WebhookHandlers {
   return {
-    onIssueUpdate: handleIssueUpdate,
-    onCommentCreate: handleCommentCreate,
-    onCommentUpdate: handleCommentUpdate,
+    onIssueUpdate: (data) => withTimeout(() => handleIssueUpdate(data), 'handleIssueUpdate'),
+    onCommentCreate: (data) => withTimeout(() => handleCommentCreate(data), 'handleCommentCreate'),
+    onCommentUpdate: (data) => withTimeout(() => handleCommentUpdate(data), 'handleCommentUpdate'),
+    onReactionCreate: (data) => withTimeout(() => handleReactionCreate(data), 'handleReactionCreate'),
   };
 }

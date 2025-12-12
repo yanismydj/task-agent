@@ -6,7 +6,7 @@ const logger = createChildLogger({ module: 'queue-database' });
 
 let db: Database.Database | null = null;
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const MIGRATIONS: Record<number, string[]> = {
   1: [
@@ -215,6 +215,24 @@ const MIGRATIONS: Record<number, string[]> = {
 
     `INSERT OR REPLACE INTO schema_version (version) VALUES (3)`,
   ],
+
+  // Migration 4: Add webhook delivery tracking for idempotency
+  // Linear retries webhooks if we don't respond within 5 seconds
+  // Track delivery IDs to prevent duplicate processing
+  4: [
+    `CREATE TABLE IF NOT EXISTS webhook_deliveries (
+      delivery_id TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      received_at TEXT NOT NULL DEFAULT (datetime('now')),
+      processed INTEGER NOT NULL DEFAULT 0
+    )`,
+
+    // Index for cleanup of old deliveries
+    `CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_received
+     ON webhook_deliveries(received_at)`,
+
+    `INSERT OR REPLACE INTO schema_version (version) VALUES (4)`,
+  ],
 };
 
 export function initDatabase(dbPath?: string): Database.Database {
@@ -315,3 +333,62 @@ export const PRIORITY_LABELS: Record<Priority, string> = {
   3: 'Medium',
   4: 'Low',
 };
+
+// Webhook delivery idempotency helpers
+
+/**
+ * Check if a webhook delivery has already been processed
+ */
+export function isWebhookDeliveryProcessed(deliveryId: string): boolean {
+  const database = getDatabase();
+  const stmt = database.prepare(
+    'SELECT processed FROM webhook_deliveries WHERE delivery_id = ?'
+  );
+  const row = stmt.get(deliveryId) as { processed: number } | undefined;
+  return row?.processed === 1;
+}
+
+/**
+ * Record a webhook delivery as received (but not yet processed)
+ * Returns false if delivery was already recorded (duplicate)
+ */
+export function recordWebhookDelivery(deliveryId: string, eventType: string): boolean {
+  const database = getDatabase();
+  try {
+    const stmt = database.prepare(
+      'INSERT INTO webhook_deliveries (delivery_id, event_type) VALUES (?, ?)'
+    );
+    stmt.run(deliveryId, eventType);
+    return true;
+  } catch (error) {
+    // UNIQUE constraint violation means duplicate
+    if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Mark a webhook delivery as fully processed
+ */
+export function markWebhookDeliveryProcessed(deliveryId: string): void {
+  const database = getDatabase();
+  const stmt = database.prepare(
+    'UPDATE webhook_deliveries SET processed = 1 WHERE delivery_id = ?'
+  );
+  stmt.run(deliveryId);
+}
+
+/**
+ * Clean up old webhook deliveries (older than 24 hours)
+ * Call periodically to prevent table from growing indefinitely
+ */
+export function cleanupOldWebhookDeliveries(): number {
+  const database = getDatabase();
+  const stmt = database.prepare(
+    "DELETE FROM webhook_deliveries WHERE received_at < datetime('now', '-24 hours')"
+  );
+  const result = stmt.run();
+  return result.changes;
+}

@@ -168,15 +168,17 @@ class TerminalUI {
   private buildAgentSection(): string {
     const lines: string[] = [];
 
-    lines.push(`${c.bold}${c.white}  AGENTS${c.reset}`);
-    lines.push(DIVIDER);
-
     const state = getAgentState ? getAgentState() : { agents: [], available: 0, total: 5 };
     const { agents, available, total } = state;
 
     if (agents.length === 0) {
-      lines.push(`  ${c.dim}No active agents${c.reset}  ${c.green}●${c.reset} ${available}/${total} available`);
+      lines.push(`${c.bold}${c.white}  CLAUDE CODE${c.reset}`);
+      lines.push(DIVIDER);
+      lines.push(`  ${c.dim}No active sessions${c.reset}  ${c.green}●${c.reset} ${available}/${total} slots available`);
     } else {
+      lines.push(`${c.bold}${c.white}  CLAUDE CODE OUTPUT${c.reset}`);
+      lines.push(DIVIDER);
+
       // Show active agents with their recent output
       for (const agent of agents) {
         const runtime = this.formatDuration(Date.now() - agent.startedAt.getTime());

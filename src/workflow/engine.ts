@@ -31,8 +31,14 @@ const logger = createChildLogger({ module: 'workflow-engine' });
 
 const READINESS_THRESHOLD = 70;
 const TASK_AGENT_TAG = '[TaskAgent]';
+const TASK_AGENT_TAG_ESCAPED = '\\[TaskAgent\\]'; // Markdown-escaped version
 const APPROVAL_TAG = '[TaskAgent Proposal]';
 const WORKING_TAG = '[TaskAgent Working]';
+
+// Helper to check if a comment body contains TaskAgent tags (handles both escaped and unescaped)
+function hasTaskAgentTag(body: string): boolean {
+  return body.includes(TASK_AGENT_TAG) || body.includes(TASK_AGENT_TAG_ESCAPED);
+}
 
 // Track active agent sessions per ticket
 const agentSessions = new Map<string, string>(); // ticketId -> sessionId
@@ -301,7 +307,7 @@ export class WorkflowEngine {
         existingComments: comments.map((c) => ({
           body: c.body,
           createdAt: c.createdAt,
-          isFromTaskAgent: c.user?.isMe || c.body.includes(TASK_AGENT_TAG),
+          isFromTaskAgent: c.user?.isMe || hasTaskAgentTag(c.body),
         })),
       },
     };
@@ -541,7 +547,7 @@ export class WorkflowEngine {
 
       const hasHumanResponse = comments.some(
         (c) => !c.user?.isMe &&
-          !c.body.includes(TASK_AGENT_TAG) &&
+          !hasTaskAgentTag(c.body) &&
           c.createdAt > lastAgentComment.createdAt
       );
 
@@ -579,7 +585,7 @@ export class WorkflowEngine {
 
   private findLastAgentComment(comments: TicketComment[]): TicketComment | undefined {
     return comments
-      .filter((c) => c.user?.isMe || c.body.includes(TASK_AGENT_TAG))
+      .filter((c) => c.user?.isMe || hasTaskAgentTag(c.body))
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
   }
 
