@@ -520,12 +520,12 @@ export class QueueProcessor {
       ticketIdentifier: task.ticketIdentifier,
       data: {
         ticket: {
-          identifier: task.ticketIdentifier,
+          identifier: ticket.identifier,
           title: ticket.title,
           description: ticket.description || '',
         },
         constraints: {
-          branchNaming: `task-agent/${task.ticketIdentifier.toLowerCase()}`,
+          branchNaming: `task-agent/${ticket.identifier.toLowerCase()}`,
         },
       },
       context: { updatedAt: ticket.updatedAt },
@@ -558,16 +558,16 @@ export class QueueProcessor {
     await linearClient.addComment(task.ticketId, `${WORKING_TAG}\n\nStarting work on this ticket...`);
 
     // Create worktree and enqueue execution
-    const worktree = await worktreeManager.create(task.ticketIdentifier);
+    const worktree = await worktreeManager.create(ticket.identifier);
 
     logger.info(
-      { ticketId: task.ticketIdentifier, worktreePath: worktree.path, branchName: worktree.branch },
+      { ticketId: ticket.identifier, worktreePath: worktree.path, branchName: worktree.branch },
       'Enqueueing Claude Code execution'
     );
 
     const enqueuedTask = claudeQueue.enqueue({
       ticketId: task.ticketId,
-      ticketIdentifier: task.ticketIdentifier,
+      ticketIdentifier: ticket.identifier,
       priority: task.priority,
       readinessScore: task.readinessScore ?? undefined,
       prompt: result.data.prompt,
@@ -578,12 +578,12 @@ export class QueueProcessor {
 
     if (enqueuedTask) {
       logger.info(
-        { ticketId: task.ticketIdentifier, taskId: enqueuedTask.id },
+        { ticketId: ticket.identifier, taskId: enqueuedTask.id },
         'Successfully enqueued Claude Code execution'
       );
     } else {
       logger.error(
-        { ticketId: task.ticketIdentifier },
+        { ticketId: ticket.identifier },
         'Failed to enqueue Claude Code execution - task may already exist'
       );
     }
