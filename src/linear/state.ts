@@ -128,8 +128,13 @@ export class LinearStateManager {
       lastHeartbeat: new Date().toISOString(),
     };
 
-    await this.upsertStateIssue(DAEMON_ISSUE_TITLE, status, 'started');
-    logger.info({ pid: status.pid }, 'Registered daemon in Linear');
+    try {
+      await this.upsertStateIssue(DAEMON_ISSUE_TITLE, status, 'started');
+      logger.info({ pid: status.pid }, 'Registered daemon in Linear');
+    } catch (error) {
+      logger.error({ error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined }, 'Failed to register daemon');
+      throw error;
+    }
   }
 
   async updateHeartbeat(): Promise<void> {
@@ -369,11 +374,13 @@ export class LinearStateManager {
   }
 
   private async upsertStateIssue(title: string, data: unknown, stateType: string): Promise<void> {
+    logger.debug({ title, stateType, stateProjectId: this.stateProjectId }, 'Upserting state issue');
     const existing = await this.getStateIssue(title);
     const description = JSON.stringify(data, null, 2);
     const client = await this.getClient();
 
     if (existing) {
+      logger.debug({ existingId: existing.id }, 'Found existing state issue, updating');
       await client.updateIssue(existing.id, { description });
       const team = await client.team(this.teamId);
       const states = await team.states();
@@ -382,6 +389,7 @@ export class LinearStateManager {
         await client.updateIssue(existing.id, { stateId: targetState.id });
       }
     } else {
+      logger.debug('No existing state issue, creating new');
       const team = await client.team(this.teamId);
       const states = await team.states();
       const targetState = states.nodes.find((s) => s.type === stateType) || states.nodes[0];
