@@ -16,9 +16,18 @@ function mapPriority(linearPriority: number): Priority {
   return 3; // Default to medium
 }
 
+// Default intervals - much slower to conserve API calls
+const DEFAULT_POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes between full polls
+const DEFAULT_RESPONSE_CHECK_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes for response checks
+
 /**
- * QueueScheduler periodically fetches tickets from Linear and enqueues
- * them for processing. It replaces the old polling model with a queue-based approach.
+ * QueueScheduler manages the flow of work from Linear.
+ *
+ * Design Philosophy:
+ * - Slow and steady: We prioritize thoroughness over speed
+ * - One ticket at a time: Focus on fully refining each ticket before moving on
+ * - Conserve API calls: Poll infrequently, cache ticket data during a work session
+ * - Human-paced: Wait for human responses naturally, don't spam checks
  */
 export class QueueScheduler {
   private running = false;
@@ -27,7 +36,15 @@ export class QueueScheduler {
   private pollIntervalMs: number;
   private responseCheckIntervalMs: number;
 
-  constructor(pollIntervalMs = 60000, responseCheckIntervalMs = 30000) {
+  // Track tickets we're waiting for responses on (to avoid re-fetching)
+  private ticketsAwaitingResponse: Map<string, { ticketId: string; identifier: string; waitingFor: string; lastChecked: Date }> = new Map();
+
+  // Cache of last fetched tickets to avoid refetching
+  private cachedTickets: TicketInfo[] = [];
+  private cacheTime: Date | null = null;
+  private readonly cacheTtlMs = 2 * 60 * 1000; // Cache valid for 2 minutes
+
+  constructor(pollIntervalMs = DEFAULT_POLL_INTERVAL_MS, responseCheckIntervalMs = DEFAULT_RESPONSE_CHECK_INTERVAL_MS) {
     this.pollIntervalMs = pollIntervalMs;
     this.responseCheckIntervalMs = responseCheckIntervalMs;
   }
@@ -43,21 +60,28 @@ export class QueueScheduler {
 
     this.running = true;
     logger.info(
-      { pollIntervalMs: this.pollIntervalMs, responseCheckIntervalMs: this.responseCheckIntervalMs },
-      'Starting queue scheduler'
+      {
+        pollIntervalMs: this.pollIntervalMs,
+        responseCheckIntervalMs: this.responseCheckIntervalMs,
+        pollIntervalMinutes: Math.round(this.pollIntervalMs / 60000),
+        responseCheckIntervalMinutes: Math.round(this.responseCheckIntervalMs / 60000),
+      },
+      'Starting queue scheduler (slow mode)'
     );
 
-    // Initial poll
-    this.pollForNewTickets();
+    // Initial poll after a short delay to let the system settle
+    setTimeout(() => {
+      this.pollForNewTickets();
+    }, 5000);
 
-    // Set up intervals
+    // Set up intervals - these are now much slower
     this.pollInterval = setInterval(() => {
       this.pollForNewTickets();
     }, this.pollIntervalMs);
 
-    // Check for responses more frequently
+    // Check for responses less frequently
     this.responseCheckInterval = setInterval(() => {
-      this.reEnqueueResponseChecks();
+      this.checkForResponses();
     }, this.responseCheckIntervalMs);
   }
 
@@ -74,11 +98,35 @@ export class QueueScheduler {
       this.responseCheckInterval = null;
     }
     this.running = false;
+    this.ticketsAwaitingResponse.clear();
+    this.cachedTickets = [];
+    this.cacheTime = null;
     logger.info('Queue scheduler stopped');
   }
 
   /**
-   * Poll Linear for tickets and enqueue new ones for evaluation
+   * Get tickets, using cache if available and fresh
+   */
+  private async getTicketsWithCache(forceRefresh = false): Promise<TicketInfo[]> {
+    // Check if cache is valid
+    if (!forceRefresh && this.cacheTime && this.cachedTickets.length > 0) {
+      const cacheAge = Date.now() - this.cacheTime.getTime();
+      if (cacheAge < this.cacheTtlMs) {
+        logger.debug({ cacheAgeSeconds: Math.round(cacheAge / 1000) }, 'Using cached tickets');
+        return this.cachedTickets;
+      }
+    }
+
+    // Fetch fresh data
+    const tickets = await linearClient.getTickets();
+    this.cachedTickets = tickets;
+    this.cacheTime = new Date();
+    return tickets;
+  }
+
+  /**
+   * Poll Linear for tickets and enqueue new ones for evaluation.
+   * This is now much less frequent and focuses on finding NEW work.
    */
   async pollForNewTickets(): Promise<number> {
     // Skip polling if rate limited
@@ -88,11 +136,26 @@ export class QueueScheduler {
       return 0;
     }
 
+    // Check if we have active work - if so, skip polling for new tickets
+    const pendingCount = linearQueue.getPendingCount();
+    const processingCount = linearQueue.getProcessingCount();
+    if (pendingCount > 0 || processingCount > 0) {
+      logger.debug(
+        { pendingCount, processingCount },
+        'Skipping poll - already have work queued'
+      );
+      return 0;
+    }
+
     try {
-      logger.debug('Polling Linear for tickets');
-      const tickets = await linearClient.getTickets();
+      logger.info('Polling Linear for new tickets');
+
+      // Force refresh cache on poll
+      const tickets = await this.getTicketsWithCache(true);
 
       let enqueued = 0;
+
+      // Only enqueue ONE new ticket at a time - focus on thoroughness
       for (const ticket of tickets) {
         // Skip if ticket is assigned (manual work)
         if (ticket.assignee) {
@@ -104,8 +167,8 @@ export class QueueScheduler {
           continue;
         }
 
-        // Skip if we just processed this ticket recently (prevents rapid re-enqueueing)
-        if (linearQueue.wasRecentlyProcessed(ticket.id, 5)) {
+        // Skip if we just processed this ticket recently (longer cooldown now)
+        if (linearQueue.wasRecentlyProcessed(ticket.id, 15)) { // 15 minute cooldown
           continue;
         }
 
@@ -133,10 +196,17 @@ export class QueueScheduler {
             );
           }
         }
+
+        // Only enqueue ONE ticket per poll cycle - focus on one at a time
+        if (enqueued > 0) {
+          break;
+        }
       }
 
       if (enqueued > 0) {
-        logger.info({ enqueued, total: tickets.length }, 'Enqueued tickets from poll');
+        logger.info({ enqueued, totalTickets: tickets.length }, 'Enqueued ticket from poll');
+      } else {
+        logger.debug({ totalTickets: tickets.length }, 'No new tickets to enqueue');
       }
 
       return enqueued;
@@ -151,37 +221,98 @@ export class QueueScheduler {
   }
 
   /**
-   * Re-enqueue response checks for tickets waiting for human input
+   * Register a ticket that we're waiting for a human response on.
+   * This avoids needing to poll Linear to check for responses.
    */
-  private async reEnqueueResponseChecks(): Promise<void> {
+  registerAwaitingResponse(ticketId: string, identifier: string, waitingFor: 'questions' | 'approval'): void {
+    this.ticketsAwaitingResponse.set(ticketId, {
+      ticketId,
+      identifier,
+      waitingFor,
+      lastChecked: new Date(),
+    });
+    logger.debug({ ticketId: identifier, waitingFor }, 'Registered ticket awaiting response');
+  }
+
+  /**
+   * Remove a ticket from the awaiting response list
+   */
+  clearAwaitingResponse(ticketId: string): void {
+    this.ticketsAwaitingResponse.delete(ticketId);
+  }
+
+  /**
+   * Check for responses on tickets we're waiting for.
+   * Only checks tickets we know are waiting, not all tickets.
+   */
+  private async checkForResponses(): Promise<void> {
     // Skip if rate limited
     if (linearClient.isRateLimited()) {
       return;
     }
 
+    // Skip if no tickets awaiting response
+    if (this.ticketsAwaitingResponse.size === 0) {
+      logger.debug('No tickets awaiting response');
+      return;
+    }
+
+    // Skip if we already have work queued
+    const pendingCount = linearQueue.getPendingCount();
+    if (pendingCount > 0) {
+      logger.debug({ pendingCount }, 'Skipping response check - already have work queued');
+      return;
+    }
+
     try {
-      const tickets = await linearClient.getTickets();
+      // Use cached tickets if available, otherwise fetch
+      const tickets = await this.getTicketsWithCache();
 
-      for (const ticket of tickets) {
-        const waitingLabel = ticket.labels.find(
-          (l) => l.name === 'ta:pending-approval' || l.name === 'ta:awaiting-response'
-        );
+      // Check each ticket we're waiting on
+      for (const [ticketId, awaiting] of this.ticketsAwaitingResponse) {
+        // Find the ticket in our list
+        const ticket = tickets.find(t => t.id === ticketId);
+        if (!ticket) {
+          // Ticket no longer in our list - maybe completed or cancelled
+          this.ticketsAwaitingResponse.delete(ticketId);
+          continue;
+        }
 
-        if (waitingLabel && !linearQueue.hasActiveTask(ticket.id, 'check_response')) {
-          linearQueue.enqueue({
-            ticketId: ticket.id,
-            ticketIdentifier: ticket.identifier,
-            taskType: 'check_response',
-            priority: mapPriority(ticket.priority),
-            inputData: {
-              waitingFor: waitingLabel.name === 'ta:pending-approval' ? 'approval' : 'questions',
-            },
-          });
+        // Check if there's already an active task
+        if (linearQueue.hasActiveTask(ticketId, 'check_response')) {
+          continue;
+        }
+
+        // Only check if enough time has passed since last check (at least 2 minutes)
+        const timeSinceLastCheck = Date.now() - awaiting.lastChecked.getTime();
+        if (timeSinceLastCheck < 2 * 60 * 1000) {
+          continue;
+        }
+
+        // Enqueue a response check
+        const item = linearQueue.enqueue({
+          ticketId: ticket.id,
+          ticketIdentifier: ticket.identifier,
+          taskType: 'check_response',
+          priority: mapPriority(ticket.priority),
+          inputData: {
+            waitingFor: awaiting.waitingFor,
+          },
+        });
+
+        if (item) {
+          awaiting.lastChecked = new Date();
+          logger.info(
+            { ticketId: ticket.identifier, waitingFor: awaiting.waitingFor },
+            'Enqueued response check'
+          );
+          // Only check ONE ticket per cycle
+          break;
         }
       }
     } catch (error) {
       if (!(error instanceof RateLimitError)) {
-        logger.error({ error }, 'Error re-enqueueing response checks');
+        logger.error({ error }, 'Error checking for responses');
       }
     }
   }

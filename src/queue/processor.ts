@@ -1,6 +1,7 @@
 import { createChildLogger } from '../utils/logger.js';
 import { linearQueue, type LinearQueueItem } from './linear-queue.js';
 import { claudeQueue, type ClaudeQueueItem } from './claude-queue.js';
+import { queueScheduler } from './scheduler.js';
 import { linearClient, RateLimitError } from '../linear/client.js';
 import { worktreeManager } from '../agents/worktree.js';
 import {
@@ -251,7 +252,10 @@ export class QueueProcessor {
       await this.syncLabel(task.ticketId, 'ta:pending-approval');
       this.callbacks.onStateChange?.(task.ticketId, 'ready_for_approval', readiness);
 
-      // Enqueue response check
+      // Register that we're waiting for approval (scheduler will check periodically)
+      queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'approval');
+
+      // Enqueue initial response check (will be followed up by scheduler)
       linearQueue.enqueue({
         ticketId: task.ticketId,
         ticketIdentifier: task.ticketIdentifier,
@@ -329,6 +333,9 @@ export class QueueProcessor {
       await this.syncLabel(task.ticketId, 'ta:pending-approval');
       this.callbacks.onStateChange?.(task.ticketId, 'ready_for_approval');
 
+      // Register that we're waiting for approval
+      queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'approval');
+
       linearQueue.enqueue({
         ticketId: task.ticketId,
         ticketIdentifier: task.ticketIdentifier,
@@ -349,8 +356,10 @@ export class QueueProcessor {
           { ticketId: task.ticketIdentifier },
           'Already have unanswered questions, skipping duplicate comment'
         );
-        // Still set the label and enqueue response check
+        // Still set the label and register for response checking
         await this.syncLabel(task.ticketId, 'ta:awaiting-response');
+        queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
+
         linearQueue.enqueue({
           ticketId: task.ticketId,
           ticketIdentifier: task.ticketIdentifier,
@@ -371,6 +380,9 @@ export class QueueProcessor {
 
           await this.syncLabel(task.ticketId, 'ta:awaiting-response');
           this.callbacks.onStateChange?.(task.ticketId, 'awaiting_response');
+
+          // Register that we're waiting for questions (scheduler will check periodically)
+          queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
 
           linearQueue.enqueue({
             ticketId: task.ticketId,
@@ -393,6 +405,9 @@ export class QueueProcessor {
       const response = this.findApprovalResponse(comments);
 
       if (response === 'approved') {
+        // Clear from awaiting response since we got a response
+        queueScheduler.clearAwaitingResponse(task.ticketId);
+
         linearQueue.complete(task.id, { response: 'approved' });
         await this.syncLabel(task.ticketId, 'ta:approved');
         this.callbacks.onStateChange?.(task.ticketId, 'approved');
@@ -407,11 +422,14 @@ export class QueueProcessor {
           inputData: task.inputData ?? undefined,
         });
       } else if (response === 'rejected') {
+        // Clear from awaiting response since we got a response
+        queueScheduler.clearAwaitingResponse(task.ticketId);
+
         linearQueue.complete(task.id, { response: 'rejected' });
         await this.syncLabel(task.ticketId, null); // Remove label
         this.callbacks.onStateChange?.(task.ticketId, 'new');
       } else {
-        // No response yet - complete without action, will be re-enqueued by scheduler
+        // No response yet - complete without action, scheduler will re-enqueue later
         linearQueue.complete(task.id, { response: 'none' });
       }
     } else if (waitingFor === 'questions') {
@@ -429,6 +447,9 @@ export class QueueProcessor {
         );
 
         if (hasHumanResponse) {
+          // Clear from awaiting response since we got a response
+          queueScheduler.clearAwaitingResponse(task.ticketId);
+
           linearQueue.complete(task.id, { response: 'received' });
 
           // Re-evaluate with new information
@@ -440,6 +461,7 @@ export class QueueProcessor {
           });
           this.callbacks.onStateChange?.(task.ticketId, 'evaluating');
         } else {
+          // No response yet - complete without action, scheduler will re-enqueue later
           linearQueue.complete(task.id, { response: 'none' });
         }
       }
