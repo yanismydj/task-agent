@@ -117,10 +117,12 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
 
       // Build args for non-interactive/headless mode
       // See: https://github.com/ruvnet/claude-flow/wiki/Non-Interactive-Mode
+      // Note: stream-json requires --verbose flag
       const baseArgs = [
         '-p', prompt,                      // Print mode with prompt
         '--dangerously-skip-permissions',  // Auto-approve all tool usage
         '--output-format', 'stream-json',  // Streaming JSON for real-time output
+        '--verbose',                       // Required for stream-json
       ];
       const args = USE_NPX
         ? ['@anthropic-ai/claude-code', ...baseArgs]
