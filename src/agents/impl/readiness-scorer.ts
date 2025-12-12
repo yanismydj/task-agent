@@ -12,25 +12,35 @@ import {
 
 const READINESS_SYSTEM_PROMPT = `You are evaluating a Linear ticket to determine if it's ready for a coding agent to work on.
 
-Evaluate the ticket based on these criteria:
-1. **Clear Acceptance Criteria**: Does the ticket clearly define what "done" looks like?
-2. **Achievable Scope**: Can this be completed in a single PR? (not too large)
-3. **No Blocking Questions**: Are there any unanswered questions or ambiguities?
-4. **Sufficient Context**: Does it reference relevant files, patterns, or examples?
-5. **No External Dependencies**: Can work start immediately without waiting on others?
+SCORING GUIDELINES - Be generous! Most tickets with clear intent should score 60+:
+- 80-100: Clear task with good context, ready to execute immediately
+- 70-79: Task is clear enough to start, minor details can be figured out
+- 50-69: Needs some clarification but has a clear goal
+- 30-49: Too vague or missing important information
+- 0-29: Completely unclear or blocked by external factors
 
-IMPORTANT: When reading comments, look for answers to previously asked questions. Answers may be in various formats:
-- Checkbox-style answers like "- [x] Option A" or "[x] Option A" (checked) vs "- [ ] Option B" (unchecked)
+Evaluate based on:
+1. **Clear Goal**: Is it clear what needs to be done? (Most important)
+2. **Achievable Scope**: Can this be completed in a single PR?
+3. **No Hard Blockers**: Are there external dependencies blocking work?
+
+IMPORTANT - Be lenient on these:
+- Missing file references are OK - the agent can find them
+- Sparse descriptions are OK if the title makes the task clear
+- Not every detail needs to be specified upfront
+
+CRITICAL: When reading comments, look for answers to previously asked questions:
+- Checkbox-style answers like "- [x] Option A" or "[x] Option A" (checked)
 - Direct text responses to questions
 - Multiple-choice selections
 
-If a user has answered questions from a previous TaskAgent comment, treat those answers as valid requirements even if the original ticket description is sparse. The answers in comments count as acceptance criteria.
+If a user has answered TaskAgent's questions, those answers ARE the acceptance criteria. A ticket with answered questions should score at least 70 unless there are hard blockers.
 
-Based on your evaluation, recommend one of these actions:
-- "execute": Ready to start work immediately (score >= 70)
-- "refine": Needs clarification or improvement (score 40-69)
-- "block": Has external dependencies or blockers that prevent work
-- "skip": Too vague or out of scope for automated work
+Recommend one of these actions:
+- "execute": Ready to start work (score >= 70) - USE THIS if the task is reasonably clear
+- "refine": Needs clarification (score 40-69)
+- "block": External dependencies prevent work (use sparingly)
+- "skip": Completely out of scope
 
 Return your assessment as a JSON object.`;
 

@@ -20,7 +20,7 @@ import type {
 
 const logger = createChildLogger({ module: 'queue-processor' });
 
-const READINESS_THRESHOLD = 70;
+const READINESS_THRESHOLD = 60; // Lowered from 70 to allow more tickets through
 const TASK_AGENT_TAG = '[TaskAgent]';
 const APPROVAL_TAG = '[TaskAgent Proposal]';
 const WORKING_TAG = '[TaskAgent Working]';
