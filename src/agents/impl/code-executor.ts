@@ -114,11 +114,17 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
       let output = '';
       const timeoutMs = this.config.timeoutMs!;
 
-      // Build args - prompt is passed as argument to -p flag
-      // Using -p (short form) with prompt as next argument is the standard headless pattern
+      // Build args for non-interactive/headless mode
+      // See: https://github.com/ruvnet/claude-flow/wiki/Non-Interactive-Mode
+      const baseArgs = [
+        '-p', prompt,                      // Print mode with prompt
+        '--dangerously-skip-permissions',  // Auto-approve all tool usage
+        '--output-format', 'json',         // Structured JSON output for reliable parsing
+        '--verbose',                       // Detailed output for debugging
+      ];
       const args = USE_NPX
-        ? ['@anthropic-ai/claude-code', '-p', prompt, '--dangerously-skip-permissions']
-        : ['-p', prompt, '--dangerously-skip-permissions'];
+        ? ['@anthropic-ai/claude-code', ...baseArgs]
+        : baseArgs;
 
       // Verify worktree exists before spawning
       if (!fs.existsSync(worktreePath)) {
@@ -141,7 +147,11 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
         args,
         {
           cwd: worktreePath,
-          env: { ...process.env },
+          env: {
+            ...process.env,
+            // Explicit non-interactive mode - prevents any TTY/interactive prompts
+            CLAUDE_FLOW_NON_INTERACTIVE: 'true',
+          },
           stdio: ['ignore', 'pipe', 'pipe'], // No stdin needed - prompt is in args
         }
       );
@@ -191,6 +201,19 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
   }
 
   private parseOutput(output: string, exitCode: number | null, ticketIdentifier: string): CodeExecutorOutput {
+    // Try to parse JSON output first (preferred)
+    const jsonResult = this.tryParseJsonOutput(output);
+    if (jsonResult) {
+      logger.info(
+        { ticketId: ticketIdentifier, success: jsonResult.success, exitCode, hasJsonOutput: true },
+        'Claude Code execution completed (JSON parsed)'
+      );
+      return jsonResult;
+    }
+
+    // Fallback to text parsing if JSON parsing fails
+    logger.debug({ ticketId: ticketIdentifier }, 'Falling back to text output parsing');
+
     // Extract PR URL if present
     const prUrlMatch = output.match(/https:\/\/github\.com\/[^\s]+\/pull\/\d+/);
     const prUrl = prUrlMatch?.[0];
@@ -229,8 +252,8 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
     }
 
     logger.info(
-      { ticketId: ticketIdentifier, success, prUrl, exitCode },
-      'Claude Code execution completed'
+      { ticketId: ticketIdentifier, success, prUrl, exitCode, hasJsonOutput: false },
+      'Claude Code execution completed (text parsed)'
     );
 
     return {
@@ -240,6 +263,80 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
       filesModified,
       error,
       output,
+    };
+  }
+
+  /**
+   * Try to parse JSON output from Claude Code's --output-format json mode
+   */
+  private tryParseJsonOutput(output: string): CodeExecutorOutput | null {
+    try {
+      // Claude Code JSON output may have multiple JSON objects (one per line in stream mode)
+      // or a single complete JSON object. Try to find and parse the final/complete one.
+      const lines = output.trim().split('\n');
+
+      // Try parsing from the end (most complete result is usually last)
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i]?.trim();
+        if (line?.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(line) as Record<string, unknown>;
+
+            // Check if this looks like a Claude Code result
+            if ('result' in parsed || 'error' in parsed || 'sessionId' in parsed) {
+              return this.extractFromJsonResult(parsed, output);
+            }
+          } catch {
+            // Not valid JSON, continue searching
+          }
+        }
+      }
+
+      // Also try parsing the entire output as a single JSON object
+      if (output.trim().startsWith('{')) {
+        const parsed = JSON.parse(output.trim()) as Record<string, unknown>;
+        return this.extractFromJsonResult(parsed, output);
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Extract CodeExecutorOutput from parsed JSON result
+   */
+  private extractFromJsonResult(parsed: Record<string, unknown>, rawOutput: string): CodeExecutorOutput {
+    // Extract common fields from Claude Code JSON output
+    const result = parsed.result as string | undefined;
+    const errorMsg = parsed.error as string | undefined;
+    const isError = parsed.is_error as boolean | undefined;
+
+    // Look for PR URL in the result text or in structured fields
+    let prUrl: string | undefined;
+    const prUrlMatch = (result || rawOutput).match(/https:\/\/github\.com\/[^\s"]+\/pull\/\d+/);
+    if (prUrlMatch) {
+      prUrl = prUrlMatch[0];
+    }
+
+    // Look for commit SHA
+    let commitSha: string | undefined;
+    const commitMatch = (result || rawOutput).match(/commit ([a-f0-9]{40})/i);
+    if (commitMatch) {
+      commitSha = commitMatch[1];
+    }
+
+    // Determine success
+    const success = !isError && !errorMsg && !result?.includes('TASK_FAILED');
+
+    return {
+      success,
+      prUrl,
+      commitSha,
+      filesModified: [],
+      error: errorMsg || (isError ? 'Task failed' : undefined),
+      output: rawOutput,
     };
   }
 
