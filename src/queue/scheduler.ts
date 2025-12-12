@@ -253,6 +253,22 @@ export class QueueScheduler {
   }
 
   /**
+   * Check if a ticket is awaiting a response
+   */
+  isAwaitingResponse(ticketId: string): boolean {
+    return this.ticketsAwaitingResponse.has(ticketId);
+  }
+
+  /**
+   * Get what type of response a ticket is awaiting
+   */
+  getAwaitingResponseType(ticketId: string): 'questions' | 'approval' | null {
+    const awaiting = this.ticketsAwaitingResponse.get(ticketId);
+    if (!awaiting) return null;
+    return awaiting.waitingFor as 'questions' | 'approval';
+  }
+
+  /**
    * Check for responses on tickets we're waiting for.
    * Only checks tickets we know are waiting, not all tickets.
    */

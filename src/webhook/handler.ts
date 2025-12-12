@@ -171,31 +171,46 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
     'Human comment detected via webhook'
   );
 
-  // Clear from awaiting response - we got a response!
-  queueScheduler.clearAwaitingResponse(issueId);
-
-  // Check if we already have a response check queued
-  if (linearQueue.hasActiveTask(issueId, 'check_response')) {
-    logger.debug({ issueId }, 'Already have response check queued');
+  // Check if we already have any active task for this ticket
+  if (linearQueue.hasAnyActiveTask(issueId)) {
+    logger.debug({ issueId }, 'Already have active task for this ticket');
     return;
   }
 
-  // Don't skip based on recent processing for webhooks - human responses are important!
-  // The check_response handler will properly detect if there's actually a new response
+  // Check if the ticket is awaiting a response from TaskAgent
+  // Only enqueue check_response if we're actually waiting for something
+  const isAwaitingResponse = queueScheduler.isAwaitingResponse(issueId);
 
-  // Enqueue immediate response check with high priority
-  linearQueue.enqueue({
-    ticketId: issueId,
-    ticketIdentifier: `webhook-${issueId}`, // We don't have the identifier, will be fetched
-    taskType: 'check_response',
-    priority: 1, // Urgent - human just responded!
-    inputData: {
-      waitingFor: 'questions', // Assume it's a response to questions
-      triggeredByWebhook: true,
-    },
-  });
+  if (isAwaitingResponse) {
+    // Clear from awaiting response - we got a response!
+    const waitingFor = queueScheduler.getAwaitingResponseType(issueId);
+    queueScheduler.clearAwaitingResponse(issueId);
 
-  logger.info({ issueId }, 'Enqueued response check from webhook');
+    // Enqueue immediate response check with high priority
+    linearQueue.enqueue({
+      ticketId: issueId,
+      ticketIdentifier: `webhook-${issueId}`, // We don't have the identifier, will be fetched
+      taskType: 'check_response',
+      priority: 1, // Urgent - human just responded!
+      inputData: {
+        waitingFor: waitingFor || 'questions',
+        triggeredByWebhook: true,
+      },
+    });
+
+    logger.info({ issueId, waitingFor }, 'Enqueued response check from webhook');
+  } else {
+    // Not awaiting response - this is a new comment on a ticket
+    // Enqueue for evaluation to see if the ticket needs work
+    linearQueue.enqueue({
+      ticketId: issueId,
+      ticketIdentifier: `webhook-${issueId}`,
+      taskType: 'evaluate',
+      priority: 2, // High priority - human just commented
+    });
+
+    logger.info({ issueId }, 'Enqueued evaluation from webhook (new comment)');
+  }
 }
 
 /**
