@@ -406,20 +406,34 @@ export class LinearTicketQueue {
 
   /**
    * Reset stuck processing tasks (e.g., after crash)
+   * On startup, pass olderThanMinutes=0 to reset ALL processing tasks
    */
-  resetStuckTasks(olderThanMinutes = 30): number {
+  resetStuckTasks(olderThanMinutes = 0): number {
     const db = getDatabase();
-    const result = db.prepare(`
-      UPDATE linear_ticket_queue
-      SET status = 'pending',
-          started_at = NULL,
-          updated_at = datetime('now')
-      WHERE status = 'processing'
-        AND started_at < datetime('now', '-' || ? || ' minutes')
-    `).run(olderThanMinutes);
+
+    let result;
+    if (olderThanMinutes === 0) {
+      // Reset ALL processing tasks (used on startup)
+      result = db.prepare(`
+        UPDATE linear_ticket_queue
+        SET status = 'pending',
+            started_at = NULL,
+            updated_at = datetime('now')
+        WHERE status = 'processing'
+      `).run();
+    } else {
+      result = db.prepare(`
+        UPDATE linear_ticket_queue
+        SET status = 'pending',
+            started_at = NULL,
+            updated_at = datetime('now')
+        WHERE status = 'processing'
+          AND started_at < datetime('now', '-' || ? || ' minutes')
+      `).run(olderThanMinutes);
+    }
 
     if (result.changes > 0) {
-      logger.warn({ count: result.changes }, 'Reset stuck processing tasks');
+      logger.warn({ count: result.changes, olderThanMinutes }, 'Reset stuck processing tasks');
     }
 
     return result.changes;
