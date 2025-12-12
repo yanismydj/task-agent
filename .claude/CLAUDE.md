@@ -6,7 +6,7 @@
 
 2. **NEVER commit `.env`** - Contains API keys. Only commit `.env.example`.
 
-3. **Use Beads for task tracking** - This project uses Beads (`bd`) for issue management. Use `bd create`, `bd ready`, `bd close` instead of TodoWrite.
+3. **Use TodoWrite for task tracking** - Track progress with the TodoWrite tool for complex multi-step tasks.
 
 ## Project Structure
 
