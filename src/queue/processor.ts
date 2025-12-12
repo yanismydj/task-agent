@@ -106,7 +106,15 @@ export class QueueProcessor {
 
     const claudeTask = claudeQueue.dequeue();
     if (claudeTask) {
+      logger.info(
+        { ticketId: claudeTask.ticketIdentifier, taskId: claudeTask.id },
+        'Dequeued Claude task, starting execution'
+      );
       await this.processClaudeTask(claudeTask);
+      logger.info(
+        { ticketId: claudeTask.ticketIdentifier, taskId: claudeTask.id },
+        'Claude task execution completed'
+      );
     }
   }
 
