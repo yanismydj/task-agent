@@ -436,6 +436,17 @@ export class LinearApiClient {
     logger.info({ issueId }, 'Updated ticket');
   }
 
+  /**
+   * Update the ticket description with consolidated requirements
+   */
+  async updateDescription(issueId: string, description: string): Promise<void> {
+    logger.debug({ issueId, descriptionLength: description.length }, 'Updating ticket description');
+    await this.withRetry(async (client) => {
+      await client.updateIssue(issueId, { description });
+    });
+    logger.info({ issueId }, 'Updated ticket description');
+  }
+
   async addLabel(issueId: string, labelName: string): Promise<void> {
     await this.withRetry(async (client) => {
       const issue = await client.issue(issueId);

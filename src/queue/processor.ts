@@ -9,6 +9,7 @@ import {
   ticketRefinerAgent,
   promptGeneratorAgent,
   codeExecutorAgent,
+  descriptionConsolidatorAgent,
 } from '../agents/impl/index.js';
 import type {
   AgentInput,
@@ -469,6 +470,9 @@ export class QueueProcessor {
           // Clear from awaiting response since we got a response
           queueScheduler.clearAwaitingResponse(task.ticketId);
 
+          // Consolidate the Q&A into an improved description
+          await this.consolidateDescription(task, comments);
+
           linearQueue.complete(task.id, { response: 'received' });
 
           // Re-evaluate with new information
@@ -696,6 +700,62 @@ export class QueueProcessor {
 
     if (newLabel) {
       await linearClient.addLabel(ticketId, newLabel);
+    }
+  }
+
+  /**
+   * Consolidate Q&A from comments into an improved ticket description
+   */
+  private async consolidateDescription(
+    task: LinearQueueItem,
+    comments: Array<{ body: string; createdAt: Date; user: { isMe: boolean } | null }>
+  ): Promise<void> {
+    // Get the ticket to get the current description
+    const ticket = await linearClient.getTicket(task.ticketId);
+    if (!ticket) {
+      logger.warn({ ticketId: task.ticketIdentifier }, 'Could not fetch ticket for description consolidation');
+      return;
+    }
+
+    // Format comments for the consolidator
+    const formattedComments = comments.map((c) => ({
+      body: c.body,
+      isFromTaskAgent: c.user?.isMe || c.body.includes(TASK_AGENT_TAG) || c.body.includes(APPROVAL_TAG),
+      createdAt: c.createdAt,
+    }));
+
+    // Only proceed if we have both TaskAgent questions and human answers
+    const hasQuestions = formattedComments.some((c) => c.isFromTaskAgent);
+    const hasAnswers = formattedComments.some((c) => !c.isFromTaskAgent);
+    if (!hasQuestions || !hasAnswers) {
+      logger.debug({ ticketId: task.ticketIdentifier }, 'Skipping consolidation - no Q&A to consolidate');
+      return;
+    }
+
+    try {
+      const result = await descriptionConsolidatorAgent.execute({
+        ticketId: task.ticketId,
+        ticketIdentifier: task.ticketIdentifier,
+        data: {
+          title: ticket.title,
+          originalDescription: ticket.description || '',
+          comments: formattedComments,
+        },
+      });
+
+      if (result.success && result.data?.consolidatedDescription) {
+        await linearClient.updateDescription(task.ticketId, result.data.consolidatedDescription);
+        logger.info(
+          { ticketId: task.ticketIdentifier, summary: result.data.summary },
+          'Description consolidated from Q&A'
+        );
+      }
+    } catch (error) {
+      // Don't fail the task if consolidation fails - it's a nice-to-have
+      logger.warn(
+        { ticketId: task.ticketIdentifier, error },
+        'Failed to consolidate description (non-fatal)'
+      );
     }
   }
 
