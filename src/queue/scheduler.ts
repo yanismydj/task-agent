@@ -17,9 +17,9 @@ function mapPriority(linearPriority: number): Priority {
   return 3; // Default to medium
 }
 
-// Default intervals - much slower to conserve API calls
-const DEFAULT_POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes between full polls
-const DEFAULT_RESPONSE_CHECK_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes for response checks
+// Default intervals - faster for development, adjust in production
+const DEFAULT_POLL_INTERVAL_MS = 60 * 1000; // 1 minute between full polls
+const DEFAULT_RESPONSE_CHECK_INTERVAL_MS = 30 * 1000; // 30 seconds for response checks
 
 /**
  * QueueScheduler manages the flow of work from Linear.
@@ -158,24 +158,34 @@ export class QueueScheduler {
 
       // Only enqueue ONE new ticket at a time - focus on thoroughness
       for (const ticket of tickets) {
+        const labelNames = ticket.labels.map(l => l.name).join(', ') || 'none';
+
         // Skip if ticket is assigned (manual work)
         if (ticket.assignee) {
+          logger.debug({ ticketId: ticket.identifier, reason: 'assigned' }, 'Skipping ticket');
           continue;
         }
 
         // Skip if we already have ANY active task for this ticket
         if (linearQueue.hasAnyActiveTask(ticket.id)) {
+          logger.debug({ ticketId: ticket.identifier, reason: 'active_task' }, 'Skipping ticket');
           continue;
         }
 
-        // Skip if we just processed this ticket recently (longer cooldown now)
-        if (linearQueue.wasRecentlyProcessed(ticket.id, 15)) { // 15 minute cooldown
+        // Skip if we just processed this ticket recently (shorter cooldown for faster iteration)
+        if (linearQueue.wasRecentlyProcessed(ticket.id, 5)) { // 5 minute cooldown (was 15)
+          logger.debug({ ticketId: ticket.identifier, reason: 'recently_processed' }, 'Skipping ticket');
           continue;
         }
 
         // Check for TaskAgent labels to determine state
         const hasTaskAgentLabel = ticket.labels.some(
           (l) => l.name === 'task-agent' || l.name.startsWith('ta:')
+        );
+
+        logger.debug(
+          { ticketId: ticket.identifier, labels: labelNames, hasTaskAgentLabel },
+          'Evaluating ticket for enqueueing'
         );
 
         // For tickets with TaskAgent labels, determine what task to enqueue based on label
@@ -324,10 +334,14 @@ export class QueueScheduler {
   private enqueueBasedOnLabel(ticket: TicketInfo): number {
     // Find the TaskAgent label
     const taLabel = ticket.labels.find((l) => l.name.startsWith('ta:') || l.name === 'task-agent');
-    if (!taLabel) return 0;
+    if (!taLabel) {
+      logger.debug({ ticketId: ticket.identifier }, 'No TaskAgent label found');
+      return 0;
+    }
 
     // Skip terminal states (completed, failed, blocked)
     if (['ta:completed', 'ta:failed', 'ta:blocked'].includes(taLabel.name)) {
+      logger.debug({ ticketId: ticket.identifier, label: taLabel.name }, 'Skipping terminal state');
       return 0;
     }
 
@@ -360,10 +374,14 @@ export class QueueScheduler {
     };
 
     const mapping = labelToTaskType[taLabel.name];
-    if (!mapping) return 0;
+    if (!mapping) {
+      logger.debug({ ticketId: ticket.identifier, label: taLabel.name }, 'No mapping for label');
+      return 0;
+    }
 
     // Check if we already have this task
     if (linearQueue.hasActiveTask(ticket.id, mapping.taskType)) {
+      logger.debug({ ticketId: ticket.identifier, taskType: mapping.taskType }, 'Already have active task');
       return 0;
     }
 
