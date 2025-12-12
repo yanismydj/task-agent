@@ -3,6 +3,8 @@ import { linearQueue } from '../queue/linear-queue.js';
 import { queueScheduler } from '../queue/scheduler.js';
 import { config } from '../config.js';
 import { linearCache } from '../linear/cache.js';
+import { descriptionApprovalManager } from '../queue/description-approvals.js';
+import { linearClient } from '../linear/client.js';
 import type { WebhookIssueData, WebhookCommentData, WebhookReactionData, WebhookHandlers } from './server.js';
 
 const logger = createChildLogger({ module: 'webhook-handler' });
@@ -287,6 +289,7 @@ async function handleCommentUpdate(data: WebhookCommentData): Promise<void> {
 /**
  * Handle emoji reactions on comments
  * When a user reacts with 👍 or 👎 to a TaskAgent Proposal comment, treat it as approval/rejection
+ * Also handles description approval requests
  */
 async function handleReactionCreate(data: WebhookReactionData): Promise<void> {
   // We only care about reactions on comments (approval proposals), not on issues
@@ -305,9 +308,11 @@ async function handleReactionCreate(data: WebhookReactionData): Promise<void> {
     return;
   }
 
+  const commentId = data.commentId;
+
   logger.info(
     {
-      commentId: data.commentId,
+      commentId,
       emoji,
       userId: data.userId,
       isApproval,
@@ -315,16 +320,76 @@ async function handleReactionCreate(data: WebhookReactionData): Promise<void> {
     'Received approval emoji reaction'
   );
 
-  // We need to find which issue this comment belongs to
-  // The reaction webhook may not include issueId, so we need to look it up
-  // For now, we'll fetch it from the Linear API
-  // TODO: Optimize by caching comment -> issue mapping
+  // First, check if this comment has a pending description approval
+  const descriptionApproval = descriptionApprovalManager.getPendingByCommentId(commentId);
+  if (descriptionApproval) {
+    logger.info(
+      { ticketId: descriptionApproval.ticketIdentifier, commentId, emoji },
+      'Processing description approval reaction'
+    );
 
-  // For now, we'll need to query Linear to get the issue ID from the comment
-  // This is a limitation - we may need to adjust the approach
-  // Let's check if issueId is provided in the webhook data
+    if (isApproval) {
+      // Approve and update description
+      const approved = descriptionApprovalManager.approve(commentId);
+      if (!approved) {
+        logger.warn({ commentId }, 'Failed to approve (already processed?)');
+        return;
+      }
+
+      // Update the ticket description
+      try {
+        await linearClient.updateDescription(descriptionApproval.ticketId, descriptionApproval.proposedDescription);
+        logger.info(
+          { ticketId: descriptionApproval.ticketIdentifier },
+          'Description updated after approval'
+        );
+
+        // Add a confirmation comment
+        await linearClient.addComment(
+          descriptionApproval.ticketId,
+          '[TaskAgent] ✅ Description has been updated based on your approval.'
+        );
+
+        // Clear the awaiting-description-approval label
+        await linearClient.removeLabel(descriptionApproval.ticketId, 'ta:awaiting-description-approval');
+
+      } catch (error) {
+        logger.error(
+          { ticketId: descriptionApproval.ticketIdentifier, error },
+          'Failed to update description after approval'
+        );
+        // Revert approval status
+        descriptionApprovalManager.reject(commentId);
+      }
+    } else if (isRejection) {
+      // Reject - keep original description
+      const rejected = descriptionApprovalManager.reject(commentId);
+      if (!rejected) {
+        logger.warn({ commentId }, 'Failed to reject (already processed?)');
+        return;
+      }
+
+      logger.info(
+        { ticketId: descriptionApproval.ticketIdentifier },
+        'Description update rejected by user'
+      );
+
+      // Add a confirmation comment
+      await linearClient.addComment(
+        descriptionApproval.ticketId,
+        '[TaskAgent] ❌ Description update rejected. Keeping the original description.'
+      );
+
+      // Clear the awaiting-description-approval label
+      await linearClient.removeLabel(descriptionApproval.ticketId, 'ta:awaiting-description-approval');
+    }
+    return;
+  }
+
+  // No description approval pending - handle as general approval reaction
+  // We need issueId for this
   if (!data.issueId) {
-    logger.warn({ commentId: data.commentId }, 'Reaction webhook missing issueId - cannot process');
+    logger.warn({ commentId }, 'Reaction webhook missing issueId - cannot process');
     return;
   }
 

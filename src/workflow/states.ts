@@ -8,6 +8,7 @@ export type TicketWorkflowState =
   | 'needs_refinement'
   | 'refining'
   | 'awaiting_response'
+  | 'awaiting_description_approval'
   | 'ready_for_approval'
   | 'approved'
   | 'generating_prompt'
@@ -21,7 +22,8 @@ export const VALID_TRANSITIONS: Record<TicketWorkflowState, TicketWorkflowState[
   evaluating: ['needs_refinement', 'ready_for_approval', 'blocked'],
   needs_refinement: ['refining'],
   refining: ['awaiting_response', 'ready_for_approval', 'evaluating'],
-  awaiting_response: ['evaluating'], // Re-evaluate after human response
+  awaiting_response: ['awaiting_description_approval', 'evaluating'], // Re-evaluate after human response
+  awaiting_description_approval: ['evaluating'], // After description approval/rejection
   ready_for_approval: ['approved', 'needs_refinement'],
   approved: ['generating_prompt'],
   generating_prompt: ['executing', 'failed'],
@@ -37,6 +39,7 @@ export const LINEAR_LABELS: Record<TicketWorkflowState, string | null> = {
   needs_refinement: 'ta:needs-refinement',
   refining: 'ta:refining',
   awaiting_response: 'ta:awaiting-response',
+  awaiting_description_approval: 'ta:awaiting-description-approval',
   ready_for_approval: 'ta:pending-approval',
   approved: 'ta:approved',
   generating_prompt: 'ta:generating-prompt',
@@ -69,7 +72,7 @@ export function isTerminalState(state: TicketWorkflowState): boolean {
 }
 
 export function requiresHumanInput(state: TicketWorkflowState): boolean {
-  return state === 'awaiting_response' || state === 'ready_for_approval';
+  return state === 'awaiting_response' || state === 'awaiting_description_approval' || state === 'ready_for_approval';
 }
 
 export function isActiveState(state: TicketWorkflowState): boolean {
