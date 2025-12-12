@@ -120,8 +120,7 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
       const baseArgs = [
         '-p', prompt,                      // Print mode with prompt
         '--dangerously-skip-permissions',  // Auto-approve all tool usage
-        '--output-format', 'json',         // Structured JSON output for reliable parsing
-        '--verbose',                       // Detailed output for debugging
+        '--output-format', 'stream-json',  // Streaming JSON for real-time output
       ];
       const args = USE_NPX
         ? ['@anthropic-ai/claude-code', ...baseArgs]
@@ -387,14 +386,19 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
 
   /**
    * Append text to recent output, keeping only the last N lines
+   * Handles stream-json format from Claude Code
    */
   private appendRecentOutput(entry: { recentOutput: string[] }, text: string): void {
     // Split into lines and filter out empty ones
     const newLines = text.split('\n').filter(line => line.trim().length > 0);
 
     for (const line of newLines) {
+      // Try to parse as JSON (stream-json format)
+      const displayLine = this.extractDisplayLine(line);
+      if (!displayLine) continue;
+
       // Truncate long lines for display
-      const truncated = line.length > 100 ? line.slice(0, 100) + '...' : line;
+      const truncated = displayLine.length > 100 ? displayLine.slice(0, 100) + '...' : displayLine;
       entry.recentOutput.push(truncated);
 
       // Keep only the last N lines
@@ -402,6 +406,62 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
         entry.recentOutput.shift();
       }
     }
+  }
+
+  /**
+   * Extract a human-readable line from stream-json output
+   */
+  private extractDisplayLine(line: string): string | null {
+    // Try to parse as JSON
+    if (line.trim().startsWith('{')) {
+      try {
+        const json = JSON.parse(line) as Record<string, unknown>;
+
+        // Handle different message types from Claude Code stream-json
+        const type = json.type as string | undefined;
+
+        if (type === 'assistant' && json.message) {
+          const msg = json.message as { content?: Array<{ type: string; text?: string; name?: string }> };
+          if (msg.content) {
+            for (const block of msg.content) {
+              if (block.type === 'text' && block.text) {
+                // Return first 100 chars of assistant text
+                return `💬 ${block.text.slice(0, 100)}`;
+              }
+              if (block.type === 'tool_use' && block.name) {
+                return `🔧 Using: ${block.name}`;
+              }
+            }
+          }
+        }
+
+        if (type === 'result') {
+          const result = json.result as string | undefined;
+          if (result) {
+            return `✅ ${result.slice(0, 80)}`;
+          }
+          if (json.is_error) {
+            return `❌ Error: ${(json.error as string) || 'Unknown error'}`;
+          }
+        }
+
+        if (type === 'system' && json.message) {
+          return `ℹ️ ${String(json.message).slice(0, 80)}`;
+        }
+
+        // Generic fallback for other types
+        if (type) {
+          return `[${type}]`;
+        }
+
+        return null;
+      } catch {
+        // Not valid JSON, treat as plain text
+      }
+    }
+
+    // Plain text output (non-JSON)
+    return line.trim();
   }
 }
 
