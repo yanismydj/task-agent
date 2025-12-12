@@ -727,10 +727,25 @@ export class QueueProcessor {
     // Only proceed if we have both TaskAgent questions and human answers
     const hasQuestions = formattedComments.some((c) => c.isFromTaskAgent);
     const hasAnswers = formattedComments.some((c) => !c.isFromTaskAgent);
+
+    logger.info(
+      {
+        ticketId: task.ticketIdentifier,
+        hasQuestions,
+        hasAnswers,
+        totalComments: formattedComments.length,
+        taskAgentComments: formattedComments.filter(c => c.isFromTaskAgent).length,
+        humanComments: formattedComments.filter(c => !c.isFromTaskAgent).length,
+      },
+      'Checking if description consolidation needed'
+    );
+
     if (!hasQuestions || !hasAnswers) {
       logger.debug({ ticketId: task.ticketIdentifier }, 'Skipping consolidation - no Q&A to consolidate');
       return;
     }
+
+    logger.info({ ticketId: task.ticketIdentifier }, 'Starting description consolidation');
 
     try {
       const result = await descriptionConsolidatorAgent.execute({

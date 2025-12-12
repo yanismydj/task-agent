@@ -6,19 +6,33 @@ import {
 } from '../core/index.js';
 import { z } from 'zod';
 
-const CONSOLIDATOR_SYSTEM_PROMPT = `You are a technical writer consolidating ticket information.
+const CONSOLIDATOR_SYSTEM_PROMPT = `You are a senior product manager writing a clear, actionable ticket description.
 
-Given a ticket's original description and the Q&A discussion in comments, create a clean, consolidated description that incorporates all the answers.
+Given the original ticket and the Q&A clarification discussion, rewrite the ticket description following product management best practices.
 
-Guidelines:
-1. Start with the original goal/intent from the title and description
-2. Add a clear "Requirements" section with bullet points from answered questions
-3. Add an "Acceptance Criteria" section based on what was specified
-4. Keep it concise but complete - a developer should understand exactly what to build
-5. Don't include the questions themselves, just the requirements that emerged from the answers
-6. Use checkbox format (- [ ]) for acceptance criteria so completion can be tracked
+## Output Structure (use this exact format):
 
-Format the output as clean Markdown.`;
+### Overview
+One paragraph explaining the goal and context. What problem does this solve? Who benefits?
+
+### Requirements
+Bullet points of specific, measurable requirements derived from the Q&A. Each requirement should be:
+- Specific (not vague)
+- Actionable (developer knows exactly what to do)
+- Derived from the clarification answers
+
+### Technical Details
+Any technical specifications, constraints, or implementation notes from the discussion.
+
+### Acceptance Criteria
+Checklist format (- [ ]) that defines "done". Each item should be testable.
+
+## Guidelines:
+- Replace the original description entirely with this new consolidated version
+- Extract concrete requirements from checkbox answers (checked items = requirements)
+- Don't reference the Q&A discussion - write as if these requirements were always known
+- Be concise but complete - a developer should understand exactly what to build
+- If answers mentioned specific technologies, files, or approaches, include them`;
 
 const CONSOLIDATOR_SCHEMA = {
   type: 'object',
