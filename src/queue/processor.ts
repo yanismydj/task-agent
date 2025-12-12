@@ -776,17 +776,7 @@ export class QueueProcessor {
 
     const commentBody = `${APPROVAL_TAG}
 
-I'd like to start working on this ticket. Here's my analysis:
-
-**Readiness Score**: ${readiness.score}/100
-**Assessment**: ${readiness.reasoning}
-
-${readiness.issues.length > 0 ? `**Potential Issues**:\n${readiness.issues.map((i) => `- ${i}`).join('\n')}` : ''}
-
-${readiness.suggestions.length > 0 ? `**Suggestions**:\n${readiness.suggestions.map((s) => `- ${s}`).join('\n')}` : ''}
-
----
-Reply with **"yes"** or **"approve"** to start, or **"no"** to skip this ticket.`;
+Ready to start (score: ${readiness.score}/100). Reply **yes** to approve or **no** to skip.`;
 
     await linearClient.addComment(task.ticketId, commentBody);
     logger.info({ ticketId: task.ticketIdentifier }, 'Approval requested');
