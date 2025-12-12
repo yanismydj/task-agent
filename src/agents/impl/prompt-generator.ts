@@ -205,9 +205,16 @@ IMPORTANT INSTRUCTIONS:
 3. Write tests if appropriate for the changes
 4. Commit your changes with a clear message referencing ${ticket.identifier}
 5. Create a draft pull request with:
-   - Title: "${ticket.identifier}: <brief description>"
+   - Title: "<brief description>"
    - Body: Summary of changes and link to the ticket
 6. Branch name should follow pattern: ${constraints.branchNaming}
+
+STRICT CONSTRAINTS:
+- Do NOT create markdown files (*.md) or documentation files unless explicitly requested in the ticket
+- Do NOT create README files, IMPLEMENTATION.md, DESIGN.md, or similar documentation
+- Do NOT create plan files or specification documents
+- Focus ONLY on code implementation - write actual code, not documentation about code
+- If the ticket asks for documentation, only then create markdown files
 
 When done, output "TASK_COMPLETE" followed by the PR URL.
 If you cannot complete the task, output "TASK_FAILED" followed by the reason.`;
