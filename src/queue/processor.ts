@@ -4,6 +4,8 @@ import { claudeQueue, type ClaudeQueueItem } from './claude-queue.js';
 import { queueScheduler } from './scheduler.js';
 import { linearClient, RateLimitError } from '../linear/client.js';
 import { worktreeManager } from '../agents/worktree.js';
+import { buildCodebaseContext } from '../utils/codebase-context.js';
+import { config } from '../config.js';
 import {
   readinessScorerAgent,
   ticketRefinerAgent,
@@ -316,40 +318,13 @@ export class QueueProcessor {
     // Use cached comments if available
     const comments = await linearClient.getCommentsCached(task.ticketId);
 
-    // Provide codebase context so the refiner doesn't ask basic questions
-    // that can be answered by looking at the repo
-    const codebaseContext = `This is the TaskAgent codebase - a system that automates Linear ticket processing using Claude.
-
-**Tech Stack (DO NOT ask questions about these - they are already decided):**
-- Language: TypeScript (Node.js)
-- Database: SQLite (better-sqlite3) for local state tracking
-- APIs: Linear SDK (@linear/sdk), Anthropic SDK
-- Build: TypeScript compiler (tsc), tsx for development
-- Testing: Vitest (if tests exist)
-
-**Architecture:**
-- src/linear/ - Linear API client and caching
-- src/agents/ - AI agents (readiness scorer, ticket refiner, prompt generator)
-- src/queue/ - Task queue management (SQLite-backed)
-- src/webhook/ - Linear webhook handling
-- src/workflow/ - Orchestration logic
-
-**Key Files:**
-- src/queue/processor.ts - Main task processing logic
-- src/linear/client.ts - Linear API wrapper
-- src/agents/impl/ - Agent implementations
-
-**DO NOT ask about:**
-- Database technology (it's SQLite)
-- API/SDK choices (Linear SDK, Anthropic SDK)
-- Language/framework (TypeScript/Node.js)
-- State storage approach (SQLite tables)
-
-**ONLY ask about:**
-- Business logic decisions (what should happen when X?)
-- User experience choices (how should users interact?)
-- Edge cases and error handling preferences
-- Scope clarification (what's in/out of scope?)`;
+    // Build dynamic codebase context from filesystem and Linear
+    // This helps the refiner ask smart questions instead of asking about obvious tech choices
+    const codebaseContext = await buildCodebaseContext(
+      config.agents.workDir,
+      linearClient,
+      task.ticketId
+    );
 
     const input: AgentInput<TicketRefinerInput> = {
       ticketId: task.ticketId,
