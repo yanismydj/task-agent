@@ -66,6 +66,9 @@ async function main() {
   // Initialize and register daemon in Linear
   await stateManager.registerDaemon();
 
+  // Pre-cache workflow states to avoid API calls later
+  await linearClient.cacheWorkflowStatesAtStartup();
+
   logger.info(
     {
       teamId: config.linear.teamId,

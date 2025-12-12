@@ -8,7 +8,8 @@ import {
 import { config } from '../config.js';
 import { createChildLogger } from '../utils/logger.js';
 import { initializeAuth, getAuth } from './auth.js';
-import type { TicketInfo, TicketComment, TicketUpdate, ProjectLead } from './types.js';
+import { linearCache } from './cache.js';
+import type { TicketInfo, TicketComment, TicketUpdate, ProjectLead, CommentInfo } from './types.js';
 
 const logger = createChildLogger({ module: 'linear-client' });
 
@@ -373,21 +374,61 @@ export class LinearApiClient {
         tickets.push(ticket);
       }
 
+      // Cache all fetched tickets
+      linearCache.upsertTickets(tickets);
+
       logger.info({ count: tickets.length }, 'Fetched tickets from Linear');
       return tickets;
     });
+  }
+
+  /**
+   * Get tickets from cache only (no API call)
+   * Use this when you want to avoid API calls and can tolerate stale data
+   */
+  getCachedTickets(options?: { stateType?: string; hasLabel?: string }): TicketInfo[] {
+    return linearCache.getTickets(options);
   }
 
   async getTicket(issueId: string): Promise<TicketInfo | null> {
     try {
       return this.withRetry(async (client) => {
         const issue = await client.issue(issueId);
-        return this.mapIssueToTicket(issue);
+        const ticket = await this.mapIssueToTicket(issue);
+        // Cache the fetched ticket
+        linearCache.upsertTicket(ticket);
+        return ticket;
       });
     } catch (error) {
       logger.error({ issueId, error }, 'Failed to fetch ticket');
       return null;
     }
+  }
+
+  /**
+   * Get a ticket, preferring cache if available and fresh enough
+   * @param maxAgeSeconds - Maximum cache age in seconds (default: 300 = 5 minutes)
+   */
+  async getTicketCached(issueId: string, maxAgeSeconds = 300): Promise<TicketInfo | null> {
+    // Check cache first
+    const cached = linearCache.getTicket(issueId);
+    if (cached) {
+      const cacheAge = linearCache.getTicketCacheAge(issueId);
+      if (cacheAge !== null && cacheAge < maxAgeSeconds) {
+        logger.debug({ issueId, cacheAge }, 'Using cached ticket');
+        return cached;
+      }
+    }
+
+    // Cache miss or stale - fetch from API
+    return this.getTicket(issueId);
+  }
+
+  /**
+   * Get a ticket from cache only (no API call)
+   */
+  getCachedTicket(issueId: string): TicketInfo | null {
+    return linearCache.getTicket(issueId);
   }
 
   async getComments(issueId: string): Promise<TicketComment[]> {
@@ -396,7 +437,7 @@ export class LinearApiClient {
       const comments = await issue.comments();
       const me = await client.viewer;
 
-      return Promise.all(
+      const result = await Promise.all(
         comments.nodes.map(async (comment: Comment) => {
           const user = await comment.user;
           return {
@@ -413,7 +454,48 @@ export class LinearApiClient {
           };
         })
       );
+
+      // Cache all comments for this ticket
+      const commentsForCache: CommentInfo[] = result.map(c => ({
+        id: c.id,
+        body: c.body,
+        user: c.user ? { id: c.user.id, name: c.user.name, isBot: c.user.isMe } : undefined,
+        createdAt: c.createdAt,
+        updatedAt: c.createdAt, // Linear comments don't have separate updatedAt
+      }));
+      linearCache.upsertComments(issueId, commentsForCache);
+
+      return result;
     });
+  }
+
+  /**
+   * Get comments, preferring cache if available
+   * Will fetch from API if cache is empty for this ticket
+   */
+  async getCommentsCached(issueId: string): Promise<TicketComment[]> {
+    // Check if we have cached comments
+    if (linearCache.hasComments(issueId)) {
+      const cached = linearCache.getComments(issueId);
+      logger.debug({ issueId, count: cached.length }, 'Using cached comments');
+      // Convert CommentInfo to TicketComment format
+      return cached.map(c => ({
+        id: c.id,
+        body: c.body,
+        createdAt: c.createdAt,
+        user: c.user ? { id: c.user.id, name: c.user.name, isMe: c.user.isBot || false } : null,
+      }));
+    }
+
+    // Cache miss - fetch from API
+    return this.getComments(issueId);
+  }
+
+  /**
+   * Get comments from cache only (no API call)
+   */
+  getCachedComments(issueId: string): CommentInfo[] {
+    return linearCache.getComments(issueId);
   }
 
   async addComment(issueId: string, body: string): Promise<void> {
@@ -535,18 +617,45 @@ export class LinearApiClient {
   // ============================================================
 
   /**
-   * Get workflow states for the team
+   * Get workflow states for the team (cached)
+   * Fetches from cache if available, otherwise from API
    */
   async getWorkflowStates(): Promise<Array<{ id: string; name: string; type: string }>> {
+    // Check cache first
+    if (linearCache.hasWorkflowStates(this.teamId)) {
+      const cached = linearCache.getWorkflowStates(this.teamId);
+      logger.debug({ teamId: this.teamId, count: cached.length }, 'Using cached workflow states');
+      return cached;
+    }
+
+    // Cache miss - fetch from API and cache
     return this.withRetry(async (client) => {
       const team = await client.team(this.teamId);
       const states = await team.states();
-      return states.nodes.map((s) => ({
+      const result = states.nodes.map((s) => ({
         id: s.id,
         name: s.name,
         type: s.type,
       }));
+
+      // Cache the workflow states
+      linearCache.cacheWorkflowStates(this.teamId, result);
+
+      return result;
     });
+  }
+
+  /**
+   * Pre-cache workflow states at startup
+   * Call this once during initialization to avoid API calls later
+   */
+  async cacheWorkflowStatesAtStartup(): Promise<void> {
+    try {
+      await this.getWorkflowStates();
+      logger.info({ teamId: this.teamId }, 'Workflow states cached at startup');
+    } catch (error) {
+      logger.warn({ error }, 'Failed to cache workflow states at startup');
+    }
   }
 
   /**

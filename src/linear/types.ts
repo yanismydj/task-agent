@@ -45,3 +45,18 @@ export interface TicketUpdate {
   assigneeId?: string;
   labelIds?: string[];
 }
+
+/**
+ * Comment info for caching (slightly different from TicketComment)
+ */
+export interface CommentInfo {
+  id: string;
+  body: string;
+  user?: {
+    id: string;
+    name: string;
+    isBot?: boolean;
+  };
+  createdAt: Date;
+  updatedAt: Date;
+}

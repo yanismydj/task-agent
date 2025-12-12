@@ -2,6 +2,7 @@ import { createChildLogger } from '../utils/logger.js';
 import { linearQueue } from '../queue/linear-queue.js';
 import { queueScheduler } from '../queue/scheduler.js';
 import { config } from '../config.js';
+import { linearCache } from '../linear/cache.js';
 import type { WebhookIssueData, WebhookCommentData, WebhookHandlers } from './server.js';
 
 const logger = createChildLogger({ module: 'webhook-handler' });
@@ -24,6 +25,21 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
     logger.debug({ teamId: data.team.id }, 'Ignoring issue from different team');
     return;
   }
+
+  // Cache the ticket data from webhook payload
+  linearCache.upsertTicket({
+    id: data.id,
+    identifier: data.identifier,
+    title: data.title,
+    description: data.description || null,
+    priority: data.priority,
+    state: data.state,
+    assignee: data.assignee || null,
+    labels: data.labels || [],
+    createdAt: new Date(data.updatedAt), // Webhook doesn't always have createdAt
+    updatedAt: new Date(data.updatedAt),
+    url: '',
+  });
 
   // Skip if issue is assigned (manual work)
   if (data.assignee) {
@@ -84,6 +100,19 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
  * This is the key handler - when a human replies, we want to act quickly
  */
 async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
+  // Cache the comment data from webhook payload
+  linearCache.upsertComment(data.issueId, {
+    id: data.id,
+    body: data.body,
+    user: data.user ? {
+      id: data.user.id,
+      name: data.user.name,
+      isBot: false, // Webhooks don't indicate bot status
+    } : undefined,
+    createdAt: new Date(data.createdAt),
+    updatedAt: new Date(data.updatedAt),
+  });
+
   // Ignore comments from TaskAgent itself
   // Note: Webhooks don't have isMe flag, so we rely on checking for TaskAgent tags
   if (data.body.includes('[TaskAgent]') || data.body.includes('[TaskAgent Proposal]') || data.body.includes('[TaskAgent Working]')) {

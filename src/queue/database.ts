@@ -6,7 +6,7 @@ const logger = createChildLogger({ module: 'queue-database' });
 
 let db: Database.Database | null = null;
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Record<number, string[]> = {
   1: [
@@ -152,6 +152,68 @@ const MIGRATIONS: Record<number, string[]> = {
      ON claude_code_queue(ticket_id)`,
 
     `INSERT OR REPLACE INTO schema_version (version) VALUES (2)`,
+  ],
+
+  // Migration 3: Add Linear data cache tables
+  // Cache ticket and comment data locally to reduce API calls
+  3: [
+    // Cached Linear tickets - updated via webhooks and periodic polling
+    `CREATE TABLE IF NOT EXISTS linear_tickets_cache (
+      id TEXT PRIMARY KEY,
+      identifier TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      description TEXT,
+      priority INTEGER NOT NULL DEFAULT 0,
+      state_id TEXT,
+      state_name TEXT,
+      state_type TEXT,
+      assignee_id TEXT,
+      assignee_name TEXT,
+      labels TEXT,
+      project_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      cached_at TEXT NOT NULL DEFAULT (datetime('now')),
+      url TEXT
+    )`,
+
+    // Cached Linear comments - updated via webhooks
+    `CREATE TABLE IF NOT EXISTS linear_comments_cache (
+      id TEXT PRIMARY KEY,
+      ticket_id TEXT NOT NULL,
+      body TEXT NOT NULL,
+      user_id TEXT,
+      user_name TEXT,
+      user_is_bot INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      cached_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (ticket_id) REFERENCES linear_tickets_cache(id) ON DELETE CASCADE
+    )`,
+
+    // Cached workflow states - refreshed at startup
+    `CREATE TABLE IF NOT EXISTS linear_workflow_states_cache (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      team_id TEXT NOT NULL,
+      cached_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+
+    // Indexes for cache tables
+    `CREATE INDEX IF NOT EXISTS idx_tickets_cache_identifier
+     ON linear_tickets_cache(identifier)`,
+
+    `CREATE INDEX IF NOT EXISTS idx_tickets_cache_state
+     ON linear_tickets_cache(state_type, state_name)`,
+
+    `CREATE INDEX IF NOT EXISTS idx_comments_cache_ticket
+     ON linear_comments_cache(ticket_id, created_at)`,
+
+    `CREATE INDEX IF NOT EXISTS idx_workflow_states_team
+     ON linear_workflow_states_cache(team_id, type)`,
+
+    `INSERT OR REPLACE INTO schema_version (version) VALUES (3)`,
   ],
 };
 

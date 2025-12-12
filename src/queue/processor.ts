@@ -218,13 +218,15 @@ export class QueueProcessor {
   // ============================================================
 
   private async handleEvaluate(task: LinearQueueItem): Promise<void> {
-    const ticket = await linearClient.getTicket(task.ticketId);
+    // Use cache-first lookup to reduce API calls
+    const ticket = await linearClient.getTicketCached(task.ticketId);
     if (!ticket) {
       linearQueue.fail(task.id, 'Ticket not found');
       return;
     }
 
-    const comments = await linearClient.getComments(task.ticketId);
+    // Use cached comments if available
+    const comments = await linearClient.getCommentsCached(task.ticketId);
 
     const input: AgentInput<ReadinessScorerInput> = {
       ticketId: task.ticketId,
@@ -300,7 +302,8 @@ export class QueueProcessor {
   }
 
   private async handleRefine(task: LinearQueueItem): Promise<void> {
-    const ticket = await linearClient.getTicket(task.ticketId);
+    // Use cache-first lookup to reduce API calls
+    const ticket = await linearClient.getTicketCached(task.ticketId);
     if (!ticket) {
       linearQueue.fail(task.id, 'Ticket not found');
       return;
@@ -319,7 +322,8 @@ export class QueueProcessor {
       return;
     }
 
-    const comments = await linearClient.getComments(task.ticketId);
+    // Use cached comments if available
+    const comments = await linearClient.getCommentsCached(task.ticketId);
 
     const input: AgentInput<TicketRefinerInput> = {
       ticketId: task.ticketId,
@@ -416,7 +420,9 @@ export class QueueProcessor {
   }
 
   private async handleCheckResponse(task: LinearQueueItem): Promise<void> {
-    const comments = await linearClient.getComments(task.ticketId);
+    // For response checking, we want fresh data since webhooks should have updated cache
+    // Use cached version - webhooks keep it updated
+    const comments = await linearClient.getCommentsCached(task.ticketId);
     const waitingFor = task.inputData?.waitingFor as string;
 
     logger.debug(
@@ -500,7 +506,8 @@ export class QueueProcessor {
   }
 
   private async handleGeneratePrompt(task: LinearQueueItem): Promise<void> {
-    const ticket = await linearClient.getTicket(task.ticketId);
+    // Use cache-first lookup to reduce API calls
+    const ticket = await linearClient.getTicketCached(task.ticketId);
     if (!ticket) {
       linearQueue.fail(task.id, 'Ticket not found');
       return;
@@ -718,8 +725,8 @@ export class QueueProcessor {
     task: LinearQueueItem,
     comments: Array<{ body: string; createdAt: Date; user: { isMe: boolean } | null }>
   ): Promise<void> {
-    // Get the ticket to get the current description
-    const ticket = await linearClient.getTicket(task.ticketId);
+    // Use cache-first lookup to reduce API calls
+    const ticket = await linearClient.getTicketCached(task.ticketId);
     if (!ticket) {
       logger.warn({ ticketId: task.ticketIdentifier }, 'Could not fetch ticket for description consolidation');
       return;
@@ -786,8 +793,8 @@ export class QueueProcessor {
     task: LinearQueueItem,
     readiness: ReadinessScorerOutput
   ): Promise<void> {
-    // Check if we've already requested approval
-    const comments = await linearClient.getComments(task.ticketId);
+    // Check if we've already requested approval - use cached comments
+    const comments = await linearClient.getCommentsCached(task.ticketId);
     const hasExistingApprovalRequest = comments.some(
       (c) => c.body.includes(APPROVAL_TAG) && c.user?.isMe
     );
