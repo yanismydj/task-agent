@@ -1,11 +1,13 @@
 import { config } from './config.js';
 import { logger, isInteractiveMode } from './utils/logger.js';
-import { terminalUI } from './utils/terminal.js';
+import { terminalUI, setAgentStateGetter } from './utils/terminal.js';
 import { stateManager } from './linear/state.js';
 import { linearClient } from './linear/client.js';
 import { initializeAuth, getAuth } from './linear/auth.js';
 import { queueManager, queueProcessor, queueScheduler } from './queue/index.js';
 import { webhookServer, createWebhookHandlers } from './webhook/index.js';
+import { codeExecutorAgent } from './agents/impl/index.js';
+import { claudeQueue } from './queue/claude-queue.js';
 
 async function checkOAuthAuthorization(): Promise<void> {
   if (config.linear.auth.mode !== 'oauth') {
@@ -32,6 +34,26 @@ async function main() {
 
   // Start terminal UI if in interactive mode
   if (isInteractiveMode) {
+    // Set up agent state provider for the UI
+    setAgentStateGetter(() => {
+      const runningTickets = codeExecutorAgent.getRunningTickets();
+      const processingCount = claudeQueue.getProcessingCount();
+      const total = config.agents.maxCodeExecutors;
+      const available = Math.max(0, total - processingCount);
+
+      return {
+        agents: runningTickets.map((ticketId, index) => ({
+          id: `exec-${ticketId}-${index}`,
+          ticketIdentifier: ticketId,
+          status: 'executing',
+          startedAt: new Date(), // We don't track exact start time, but it's running now
+          recentOutput: [] as string[],
+        })),
+        available,
+        total,
+      };
+    });
+
     terminalUI.start();
   }
 
