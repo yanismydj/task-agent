@@ -114,10 +114,11 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
       let output = '';
       const timeoutMs = this.config.timeoutMs!;
 
-      // Build args - if using npx, we need to prefix with @anthropic-ai/claude-code
+      // Build args - prompt is passed as argument to -p flag
+      // Using -p (short form) with prompt as next argument is the standard headless pattern
       const args = USE_NPX
-        ? ['@anthropic-ai/claude-code', '--print', '--dangerously-skip-permissions', prompt]
-        : ['--print', '--dangerously-skip-permissions', prompt];
+        ? ['@anthropic-ai/claude-code', '-p', prompt, '--dangerously-skip-permissions']
+        : ['-p', prompt, '--dangerously-skip-permissions'];
 
       // Verify worktree exists before spawning
       if (!fs.existsSync(worktreePath)) {
@@ -131,7 +132,7 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
       }
 
       logger.info(
-        { ticketId: ticketIdentifier, claudePath: CLAUDE_PATH, useNpx: USE_NPX, cwd: worktreePath },
+        { ticketId: ticketIdentifier, claudePath: CLAUDE_PATH, useNpx: USE_NPX, cwd: worktreePath, promptLength: prompt.length },
         'Spawning Claude Code'
       );
 
@@ -141,6 +142,7 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
         {
           cwd: worktreePath,
           env: { ...process.env },
+          stdio: ['ignore', 'pipe', 'pipe'], // No stdin needed - prompt is in args
         }
       );
 
