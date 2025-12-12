@@ -108,8 +108,8 @@ export class WebhookServer {
           return;
         }
 
-        // Only accept POST to /webhook
-        if (req.method !== 'POST' || !req.url?.startsWith('/webhook')) {
+        // Accept POST to /webhook or / (Linear may send to either)
+        if (req.method !== 'POST' || !(req.url === '/' || req.url?.startsWith('/webhook'))) {
           res.writeHead(404);
           res.end('Not Found');
           return;
