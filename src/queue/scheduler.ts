@@ -1,6 +1,7 @@
 import { createChildLogger } from '../utils/logger.js';
 import { linearClient, RateLimitError } from '../linear/client.js';
 import { linearQueue } from './linear-queue.js';
+import { claudeQueue } from './claude-queue.js';
 import type { TicketInfo } from '../linear/types.js';
 import type { Priority } from './database.js';
 
@@ -325,8 +326,25 @@ export class QueueScheduler {
     const taLabel = ticket.labels.find((l) => l.name.startsWith('ta:') || l.name === 'task-agent');
     if (!taLabel) return 0;
 
-    // Skip terminal states
-    if (['ta:completed', 'ta:failed', 'ta:blocked', 'task-agent'].includes(taLabel.name)) {
+    // Skip terminal states (completed, failed, blocked)
+    if (['ta:completed', 'ta:failed', 'ta:blocked'].includes(taLabel.name)) {
+      return 0;
+    }
+
+    // For 'task-agent' label (work in progress), check if there's actually a Claude task running
+    // If not, the task may have failed and we need to recover
+    if (taLabel.name === 'task-agent') {
+      if (claudeQueue.hasActiveTask(ticket.id)) {
+        // Claude Code is actively working on this - skip
+        logger.debug({ ticketId: ticket.identifier }, 'Claude Code is actively working on this ticket');
+        return 0;
+      }
+      // No active Claude task but has task-agent label - this ticket may be stuck
+      // Log for debugging but don't auto-recover (manual intervention needed)
+      logger.warn(
+        { ticketId: ticket.identifier },
+        'Ticket has task-agent label but no active Claude task - may be stuck'
+      );
       return 0;
     }
 

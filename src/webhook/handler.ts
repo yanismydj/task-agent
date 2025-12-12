@@ -85,7 +85,8 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
  */
 async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
   // Ignore comments from TaskAgent itself
-  if (data.user?.isMe || data.body.includes('[TaskAgent]')) {
+  // Note: Webhooks don't have isMe flag, so we rely on checking for TaskAgent tags
+  if (data.body.includes('[TaskAgent]') || data.body.includes('[TaskAgent Proposal]') || data.body.includes('[TaskAgent Working]')) {
     logger.debug({ commentId: data.id }, 'Ignoring TaskAgent comment');
     return;
   }
@@ -132,8 +133,8 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
  * Useful for when users edit their responses
  */
 async function handleCommentUpdate(data: WebhookCommentData): Promise<void> {
-  // Ignore TaskAgent comments
-  if (data.user?.isMe || data.body.includes('[TaskAgent]')) {
+  // Ignore TaskAgent comments (webhooks don't have isMe, so check for tags)
+  if (data.body.includes('[TaskAgent]') || data.body.includes('[TaskAgent Proposal]') || data.body.includes('[TaskAgent Working]')) {
     return;
   }
 

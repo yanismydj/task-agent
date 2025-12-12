@@ -94,6 +94,15 @@ export class QueueProcessor {
     }
 
     // Process claude queue tasks (respects concurrency)
+    const claudePending = claudeQueue.getPendingCount();
+    const claudeProcessing = claudeQueue.getProcessingCount();
+    if (claudePending > 0 || claudeProcessing > 0) {
+      logger.debug(
+        { pending: claudePending, processing: claudeProcessing },
+        'Claude queue status before dequeue'
+      );
+    }
+
     const claudeTask = claudeQueue.dequeue();
     if (claudeTask) {
       await this.processClaudeTask(claudeTask);
@@ -401,8 +410,18 @@ export class QueueProcessor {
     const comments = await linearClient.getComments(task.ticketId);
     const waitingFor = task.inputData?.waitingFor as string;
 
+    logger.debug(
+      { ticketId: task.ticketIdentifier, waitingFor, commentCount: comments.length },
+      'Checking for response'
+    );
+
     if (waitingFor === 'approval') {
       const response = this.findApprovalResponse(comments);
+
+      logger.info(
+        { ticketId: task.ticketIdentifier, response: response || 'none' },
+        'Approval check result'
+      );
 
       if (response === 'approved') {
         // Clear from awaiting response since we got a response
@@ -522,7 +541,12 @@ export class QueueProcessor {
     // Create worktree and enqueue execution
     const worktree = await worktreeManager.create(task.ticketIdentifier);
 
-    claudeQueue.enqueue({
+    logger.info(
+      { ticketId: task.ticketIdentifier, worktreePath: worktree.path, branchName: worktree.branch },
+      'Enqueueing Claude Code execution'
+    );
+
+    const enqueuedTask = claudeQueue.enqueue({
       ticketId: task.ticketId,
       ticketIdentifier: task.ticketIdentifier,
       priority: task.priority,
@@ -532,6 +556,18 @@ export class QueueProcessor {
       branchName: worktree.branch,
       agentSessionId: session?.id,
     });
+
+    if (enqueuedTask) {
+      logger.info(
+        { ticketId: task.ticketIdentifier, taskId: enqueuedTask.id },
+        'Successfully enqueued Claude Code execution'
+      );
+    } else {
+      logger.error(
+        { ticketId: task.ticketIdentifier },
+        'Failed to enqueue Claude Code execution - task may already exist'
+      );
+    }
 
     this.callbacks.onStateChange?.(task.ticketId, 'executing');
   }
@@ -704,7 +740,25 @@ Reply with **"yes"** or **"approve"** to start, or **"no"** to skip this ticket.
       (c) => c.body.includes(APPROVAL_TAG) && c.user?.isMe
     );
 
-    if (!proposalComment) return null;
+    if (!proposalComment) {
+      // Also check by tag if isMe isn't set (webhook comments may not have it)
+      const proposalByTag = comments.find(
+        (c) => c.body.includes(APPROVAL_TAG)
+      );
+      if (!proposalByTag) {
+        logger.debug('No approval proposal comment found');
+        return null;
+      }
+      // Use the tag-based match if isMe check didn't find it
+      logger.debug('Found approval proposal by tag (not isMe check)');
+    }
+
+    const effectiveProposal = proposalComment || comments.find((c) => c.body.includes(APPROVAL_TAG))!;
+
+    logger.debug(
+      { proposalCreatedAt: effectiveProposal.createdAt },
+      'Found approval proposal'
+    );
 
     // Check responses after the proposal
     const sortedComments = comments.sort(
@@ -712,8 +766,10 @@ Reply with **"yes"** or **"approve"** to start, or **"no"** to skip this ticket.
     );
 
     for (const comment of sortedComments) {
+      // Skip our own comments (by isMe or by tag)
       if (comment.user?.isMe) continue;
-      if (comment.createdAt <= proposalComment.createdAt) continue;
+      if (comment.body.includes(TASK_AGENT_TAG) || comment.body.includes(APPROVAL_TAG)) continue;
+      if (comment.createdAt <= effectiveProposal.createdAt) continue;
 
       const body = comment.body.toLowerCase().trim();
 
