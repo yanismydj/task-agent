@@ -6,7 +6,7 @@ const logger = createChildLogger({ module: 'queue-database' });
 
 let db: Database.Database | null = null;
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 const MIGRATIONS: Record<number, string[]> = {
   1: [
@@ -232,6 +232,32 @@ const MIGRATIONS: Record<number, string[]> = {
      ON webhook_deliveries(received_at)`,
 
     `INSERT OR REPLACE INTO schema_version (version) VALUES (4)`,
+  ],
+
+  // Migration 5: Add pending description approvals table
+  // Tracks description rewrites awaiting user approval via emoji reactions
+  5: [
+    `CREATE TABLE IF NOT EXISTS pending_description_approvals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id TEXT NOT NULL UNIQUE,
+      ticket_identifier TEXT NOT NULL,
+      comment_id TEXT NOT NULL,
+      proposed_description TEXT NOT NULL,
+      original_description TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      status TEXT NOT NULL DEFAULT 'pending'
+    )`,
+
+    `CREATE INDEX IF NOT EXISTS idx_pending_approvals_ticket
+     ON pending_description_approvals(ticket_id)`,
+
+    `CREATE INDEX IF NOT EXISTS idx_pending_approvals_comment
+     ON pending_description_approvals(comment_id)`,
+
+    `CREATE INDEX IF NOT EXISTS idx_pending_approvals_status
+     ON pending_description_approvals(status, created_at)`,
+
+    `INSERT OR REPLACE INTO schema_version (version) VALUES (5)`,
   ],
 };
 

@@ -20,6 +20,7 @@ import type {
   TicketRefinerInput,
   PromptGeneratorInput,
 } from '../agents/core/index.js';
+import { descriptionApprovalManager } from './description-approvals.js';
 
 const logger = createChildLogger({ module: 'queue-processor' });
 
@@ -839,6 +840,7 @@ export class QueueProcessor {
       'ta:needs-refinement',
       'ta:refining',
       'ta:awaiting-response',
+      'ta:awaiting-description-approval',
       'ta:pending-approval',
       'ta:approved',
       'ta:generating-prompt',
@@ -854,6 +856,7 @@ export class QueueProcessor {
 
   /**
    * Consolidate Q&A from comments into an improved ticket description
+   * Now requests approval before updating
    */
   private async consolidateDescription(
     task: LinearQueueItem,
@@ -908,10 +911,15 @@ export class QueueProcessor {
       });
 
       if (result.success && result.data?.consolidatedDescription) {
-        await linearClient.updateDescription(task.ticketId, result.data.consolidatedDescription);
+        // Post approval request comment with full proposed description
+        await this.requestDescriptionApproval(
+          task,
+          result.data.consolidatedDescription,
+          ticket.description
+        );
         logger.info(
           { ticketId: task.ticketIdentifier, summary: result.data.summary },
-          'Description consolidated from Q&A'
+          'Description approval requested'
         );
       }
     } catch (error) {
@@ -970,6 +978,71 @@ Ready to start (score: ${readiness.score}/100). React with 👍 to approve or �
 
     await linearClient.addComment(task.ticketId, commentBody);
     logger.info({ ticketId: task.ticketIdentifier }, 'Approval requested');
+  }
+
+  private async requestDescriptionApproval(
+    task: LinearQueueItem,
+    proposedDescription: string,
+    originalDescription: string | null
+  ): Promise<void> {
+    // Check if we already have a pending approval for this ticket
+    const existingApproval = descriptionApprovalManager.getPendingByTicketId(task.ticketId);
+    if (existingApproval) {
+      logger.info(
+        { ticketId: task.ticketIdentifier, existingCommentId: existingApproval.commentId },
+        'Description approval already pending, skipping duplicate'
+      );
+      return;
+    }
+
+    // Post comment with full proposed description
+    const commentBody = `${TASK_AGENT_TAG} **Description Rewrite Proposal**
+
+Based on the Q&A discussion, I've prepared an improved ticket description. Please review the complete proposed description below and react with:
+- 👍 to approve and update the description
+- 👎 to reject and keep the current description
+
+---
+
+## Proposed New Description
+
+${proposedDescription}
+
+---
+
+React to this comment with 👍 or 👎 to proceed.`;
+
+    await linearClient.addComment(task.ticketId, commentBody);
+
+    // Get the comment we just posted to get its ID
+    // We need to fetch comments to get the comment ID
+    const comments = await linearClient.getComments(task.ticketId);
+    const approvalComment = comments
+      .filter(c => c.body.includes('Description Rewrite Proposal'))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+
+    if (!approvalComment) {
+      logger.error({ ticketId: task.ticketIdentifier }, 'Could not find approval comment after posting');
+      return;
+    }
+
+    // Store pending approval in database
+    descriptionApprovalManager.createPending(
+      task.ticketId,
+      task.ticketIdentifier,
+      approvalComment.id,
+      proposedDescription,
+      originalDescription
+    );
+
+    // Set workflow state label
+    await this.syncLabel(task.ticketId, 'ta:awaiting-description-approval');
+    this.callbacks.onStateChange?.(task.ticketId, 'awaiting_description_approval');
+
+    logger.info(
+      { ticketId: task.ticketIdentifier, commentId: approvalComment.id },
+      'Description approval requested via emoji reaction'
+    );
   }
 
   private findApprovalResponse(
