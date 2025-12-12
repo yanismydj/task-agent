@@ -557,8 +557,9 @@ export class QueueProcessor {
         await this.syncLabel(task.ticketId, null); // Remove label
         this.callbacks.onStateChange?.(task.ticketId, 'new');
       } else {
-        // No response yet - complete without action, scheduler will re-enqueue later
+        // No response yet - re-register for future checks and complete
         logger.debug({ ticketId: task.ticketIdentifier }, 'No approval response yet');
+        queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'approval');
         linearQueue.complete(task.id, { response: 'none' });
       }
     } else if (waitingFor === 'questions') {
@@ -633,13 +634,21 @@ export class QueueProcessor {
           });
           this.callbacks.onStateChange?.(task.ticketId, 'evaluating');
         } else {
-          // No response yet - complete without action, scheduler will re-enqueue later
+          // No response yet - re-register for future checks and complete
           logger.debug({ ticketId: task.ticketIdentifier }, 'No human response yet');
+          queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
           linearQueue.complete(task.id, { response: 'none' });
         }
       } else {
         // No agent comment found - this shouldn't happen but handle it gracefully
+        // Re-enqueue for evaluation to recover
         logger.warn({ ticketId: task.ticketIdentifier }, 'No agent comment found while waiting for questions response');
+        linearQueue.enqueue({
+          ticketId: task.ticketId,
+          ticketIdentifier: task.ticketIdentifier,
+          taskType: 'evaluate',
+          priority: task.priority,
+        });
         linearQueue.complete(task.id, { response: 'none', error: 'no_agent_comment' });
       }
     } else {
