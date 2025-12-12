@@ -441,6 +441,52 @@ export class LinearTicketQueue {
   }
 
   /**
+   * Check if ticket has ANY active task (pending or processing)
+   */
+  hasAnyActiveTask(ticketId: string): boolean {
+    const db = getDatabase();
+    const row = db.prepare(`
+      SELECT 1 FROM linear_ticket_queue
+      WHERE ticket_id = ?
+        AND status IN ('pending', 'processing')
+      LIMIT 1
+    `).get(ticketId);
+    return !!row;
+  }
+
+  /**
+   * Check if a ticket was processed recently (within the last N minutes)
+   * This prevents re-enqueueing tickets we just finished processing
+   */
+  wasRecentlyProcessed(ticketId: string, withinMinutes = 5): boolean {
+    const db = getDatabase();
+    const row = db.prepare(`
+      SELECT 1 FROM linear_ticket_queue
+      WHERE ticket_id = ?
+        AND status IN ('completed', 'failed')
+        AND completed_at > datetime('now', '-' || ? || ' minutes')
+      LIMIT 1
+    `).get(ticketId, withinMinutes);
+    return !!row;
+  }
+
+  /**
+   * Get the most recent task status for a ticket
+   */
+  getLatestTaskStatus(ticketId: string): { taskType: LinearTaskType; status: TaskStatus } | null {
+    const db = getDatabase();
+    const row = db.prepare(`
+      SELECT task_type, status FROM linear_ticket_queue
+      WHERE ticket_id = ?
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get(ticketId) as { task_type: string; status: string } | undefined;
+
+    if (!row) return null;
+    return { taskType: row.task_type as LinearTaskType, status: row.status as TaskStatus };
+  }
+
+  /**
    * Update priority for a ticket's pending tasks
    */
   updatePriority(ticketId: string, priority: Priority, readinessScore?: number): void {

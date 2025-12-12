@@ -94,20 +94,25 @@ export class QueueScheduler {
 
       let enqueued = 0;
       for (const ticket of tickets) {
-        // Skip if ticket already has TaskAgent labels (already being processed)
-        const hasTaskAgentLabel = ticket.labels.some(
-          (l) => l.name === 'task-agent' || l.name.startsWith('ta:')
-        );
-
         // Skip if ticket is assigned (manual work)
         if (ticket.assignee) {
           continue;
         }
 
-        // Check if we already have an active task for this ticket
-        if (linearQueue.hasActiveTask(ticket.id, 'evaluate')) {
+        // Skip if we already have ANY active task for this ticket
+        if (linearQueue.hasAnyActiveTask(ticket.id)) {
           continue;
         }
+
+        // Skip if we just processed this ticket recently (prevents rapid re-enqueueing)
+        if (linearQueue.wasRecentlyProcessed(ticket.id, 5)) {
+          continue;
+        }
+
+        // Check for TaskAgent labels to determine state
+        const hasTaskAgentLabel = ticket.labels.some(
+          (l) => l.name === 'task-agent' || l.name.startsWith('ta:')
+        );
 
         // For tickets with TaskAgent labels, determine what task to enqueue based on label
         if (hasTaskAgentLabel) {
@@ -185,22 +190,24 @@ export class QueueScheduler {
    * Enqueue appropriate task based on ticket's current label state
    */
   private enqueueBasedOnLabel(ticket: TicketInfo): number {
-    const priority = mapPriority(ticket.priority);
-
     // Find the TaskAgent label
     const taLabel = ticket.labels.find((l) => l.name.startsWith('ta:') || l.name === 'task-agent');
     if (!taLabel) return 0;
 
-    const labelToTaskType: Record<string, { taskType: 'evaluate' | 'refine' | 'check_response' | 'generate_prompt'; inputData?: Record<string, unknown> }> = {
+    // Skip terminal states
+    if (['ta:completed', 'ta:failed', 'ta:blocked', 'task-agent'].includes(taLabel.name)) {
+      return 0;
+    }
+
+    const labelToTaskType: Record<string, { taskType: 'evaluate' | 'refine' | 'check_response' | 'generate_prompt'; inputData?: Record<string, unknown>; priorityBoost?: number }> = {
       'ta:evaluating': { taskType: 'evaluate' },
       'ta:needs-refinement': { taskType: 'refine' },
       'ta:refining': { taskType: 'refine' },
-      'ta:awaiting-response': { taskType: 'check_response', inputData: { waitingFor: 'questions' } },
-      'ta:pending-approval': { taskType: 'check_response', inputData: { waitingFor: 'approval' } },
+      // Response checks get priority boost - we want to maintain conversation flow
+      'ta:awaiting-response': { taskType: 'check_response', inputData: { waitingFor: 'questions' }, priorityBoost: -1 },
+      'ta:pending-approval': { taskType: 'check_response', inputData: { waitingFor: 'approval' }, priorityBoost: -1 },
       'ta:approved': { taskType: 'generate_prompt' },
       'ta:generating-prompt': { taskType: 'generate_prompt' },
-      // 'task-agent' = executing, handled by claude queue
-      // 'ta:completed', 'ta:failed', 'ta:blocked' = terminal states, skip
     };
 
     const mapping = labelToTaskType[taLabel.name];
@@ -209,6 +216,12 @@ export class QueueScheduler {
     // Check if we already have this task
     if (linearQueue.hasActiveTask(ticket.id, mapping.taskType)) {
       return 0;
+    }
+
+    // Calculate priority with optional boost (lower number = higher priority)
+    let priority = mapPriority(ticket.priority);
+    if (mapping.priorityBoost) {
+      priority = Math.max(1, Math.min(4, priority + mapping.priorityBoost)) as Priority;
     }
 
     const item = linearQueue.enqueue({
