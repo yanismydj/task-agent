@@ -951,9 +951,10 @@ export class QueueProcessor {
     }
 
     // Check if we've already requested approval - use cached comments
+    // Note: We check for APPROVAL_TAG in body since cached comments don't have isMe flag
     const comments = await linearClient.getCommentsCached(task.ticketId);
     const hasExistingApprovalRequest = comments.some(
-      (c) => c.body.includes(APPROVAL_TAG) && c.user?.isMe
+      (c) => c.body.includes(APPROVAL_TAG)
     );
 
     if (hasExistingApprovalRequest) {
