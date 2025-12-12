@@ -1,6 +1,25 @@
-import { spawn, ChildProcess } from 'node:child_process';
+import { spawn, ChildProcess, execSync } from 'node:child_process';
 import { config } from '../../config.js';
 import { createChildLogger } from '../../utils/logger.js';
+
+// Find the claude binary path at startup
+function findClaudePath(): string {
+  try {
+    // Try to find claude in PATH
+    const claudePath = execSync('which claude', { encoding: 'utf-8' }).trim();
+    if (claudePath) {
+      return claudePath;
+    }
+  } catch {
+    // which failed, try common locations
+  }
+
+  // Fallback to npx which should always work if @anthropic-ai/claude-code is installed
+  return 'npx';
+}
+
+const CLAUDE_PATH = findClaudePath();
+const USE_NPX = CLAUDE_PATH === 'npx';
 import {
   type AgentConfig,
   type AgentInput,
@@ -94,12 +113,23 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
       let output = '';
       const timeoutMs = this.config.timeoutMs!;
 
+      // Build args - if using npx, we need to prefix with @anthropic-ai/claude-code
+      const args = USE_NPX
+        ? ['@anthropic-ai/claude-code', '--print', '--dangerously-skip-permissions', prompt]
+        : ['--print', '--dangerously-skip-permissions', prompt];
+
+      logger.info(
+        { ticketId: ticketIdentifier, claudePath: CLAUDE_PATH, useNpx: USE_NPX },
+        'Spawning Claude Code'
+      );
+
       const childProcess = spawn(
-        'claude',
-        ['--print', '--dangerously-skip-permissions', prompt],
+        CLAUDE_PATH,
+        args,
         {
           cwd: worktreePath,
           env: { ...process.env },
+          shell: true, // Use shell to ensure PATH is resolved
         }
       );
 
