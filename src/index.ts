@@ -36,18 +36,18 @@ async function main() {
   if (isInteractiveMode) {
     // Set up agent state provider for the UI
     setAgentStateGetter(() => {
-      const runningTickets = codeExecutorAgent.getRunningTickets();
+      const runningAgents = codeExecutorAgent.getRunningAgents();
       const processingCount = claudeQueue.getProcessingCount();
       const total = config.agents.maxCodeExecutors;
       const available = Math.max(0, total - processingCount);
 
       return {
-        agents: runningTickets.map((ticketId, index) => ({
-          id: `exec-${ticketId}-${index}`,
-          ticketIdentifier: ticketId,
+        agents: runningAgents.map((agent) => ({
+          id: agent.id,
+          ticketIdentifier: agent.ticketId,
           status: 'executing',
-          startedAt: new Date(), // We don't track exact start time, but it's running now
-          recentOutput: [] as string[],
+          startedAt: agent.startedAt,
+          recentOutput: agent.recentOutput,
         })),
         available,
         total,

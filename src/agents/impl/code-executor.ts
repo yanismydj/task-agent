@@ -50,7 +50,8 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
   readonly inputSchema = CodeExecutorInputSchema;
   readonly outputSchema = CodeExecutorOutputSchema;
 
-  private runningProcesses: Map<string, { process: ChildProcess; ticketId: string }> = new Map();
+  private runningProcesses: Map<string, { process: ChildProcess; ticketId: string; recentOutput: string[]; startedAt: Date }> = new Map();
+  private readonly MAX_OUTPUT_LINES = 5; // Keep last N lines for UI display
 
   validateInput(input: unknown): CodeExecutorInput {
     return this.inputSchema.parse(input);
@@ -157,7 +158,8 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
       );
 
       const processId = `exec-${ticketIdentifier}-${Date.now()}`;
-      this.runningProcesses.set(processId, { process: childProcess, ticketId: ticketIdentifier });
+      const processEntry = { process: childProcess, ticketId: ticketIdentifier, recentOutput: [] as string[], startedAt: new Date() };
+      this.runningProcesses.set(processId, processEntry);
 
       // Set timeout
       const timeout = setTimeout(() => {
@@ -169,12 +171,16 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
       childProcess.stdout?.on('data', (data: Buffer) => {
         const text = data.toString();
         output += text;
+        // Update recent output for UI display
+        this.appendRecentOutput(processEntry, text);
         logger.debug({ ticketId: ticketIdentifier, bytes: text.length }, 'Claude Code output');
       });
 
       childProcess.stderr?.on('data', (data: Buffer) => {
         const text = data.toString();
         output += text;
+        // Update recent output for UI display (stderr too)
+        this.appendRecentOutput(processEntry, text);
         logger.warn({ ticketId: ticketIdentifier, stderr: text.slice(0, 200) }, 'Claude Code stderr');
       });
 
@@ -365,6 +371,37 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
 
   getRunningTickets(): string[] {
     return Array.from(this.runningProcesses.values()).map((e) => e.ticketId);
+  }
+
+  /**
+   * Get detailed info about running agents for UI display
+   */
+  getRunningAgents(): Array<{ id: string; ticketId: string; recentOutput: string[]; startedAt: Date }> {
+    return Array.from(this.runningProcesses.entries()).map(([id, entry]) => ({
+      id,
+      ticketId: entry.ticketId,
+      recentOutput: entry.recentOutput,
+      startedAt: entry.startedAt,
+    }));
+  }
+
+  /**
+   * Append text to recent output, keeping only the last N lines
+   */
+  private appendRecentOutput(entry: { recentOutput: string[] }, text: string): void {
+    // Split into lines and filter out empty ones
+    const newLines = text.split('\n').filter(line => line.trim().length > 0);
+
+    for (const line of newLines) {
+      // Truncate long lines for display
+      const truncated = line.length > 100 ? line.slice(0, 100) + '...' : line;
+      entry.recentOutput.push(truncated);
+
+      // Keep only the last N lines
+      if (entry.recentOutput.length > this.MAX_OUTPUT_LINES) {
+        entry.recentOutput.shift();
+      }
+    }
   }
 }
 
