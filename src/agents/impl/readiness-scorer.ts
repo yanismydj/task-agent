@@ -19,6 +19,13 @@ Evaluate the ticket based on these criteria:
 4. **Sufficient Context**: Does it reference relevant files, patterns, or examples?
 5. **No External Dependencies**: Can work start immediately without waiting on others?
 
+IMPORTANT: When reading comments, look for answers to previously asked questions. Answers may be in various formats:
+- Checkbox-style answers like "- [x] Option A" or "[x] Option A" (checked) vs "- [ ] Option B" (unchecked)
+- Direct text responses to questions
+- Multiple-choice selections
+
+If a user has answered questions from a previous TaskAgent comment, treat those answers as valid requirements even if the original ticket description is sparse. The answers in comments count as acceptance criteria.
+
 Based on your evaluation, recommend one of these actions:
 - "execute": Ready to start work immediately (score >= 70)
 - "refine": Needs clarification or improvement (score 40-69)
@@ -157,8 +164,11 @@ ${description || '(no description)'}`;
 
     if (comments && comments.length > 0) {
       ticketText += '\n\n## Recent Comments\n';
+      // Show last 5 comments, but include full content for recent answers (up to 1000 chars each)
+      // This is important for capturing checkbox responses and detailed answers
       for (const comment of comments.slice(-5)) {
-        ticketText += `- ${comment.body.slice(0, 200)}${comment.body.length > 200 ? '...' : ''}\n`;
+        const maxLen = 1000;
+        ticketText += `\n### Comment:\n${comment.body.slice(0, maxLen)}${comment.body.length > maxLen ? '\n... (truncated)' : ''}\n`;
       }
     }
 
