@@ -2,6 +2,7 @@ import { config } from './config.js';
 import { logger, isInteractiveMode } from './utils/logger.js';
 import { terminalUI } from './utils/terminal.js';
 import { stateManager } from './linear/state.js';
+import { linearClient } from './linear/client.js';
 import { initializeAuth, getAuth } from './linear/auth.js';
 import { queueManager, queueProcessor, queueScheduler } from './queue/index.js';
 
@@ -101,12 +102,30 @@ async function main() {
     },
   });
 
+  // Check rate limit status before starting
+  const waitSeconds = await linearClient.checkStartupRateLimit();
+  if (waitSeconds > 0) {
+    logger.warn(
+      { waitSeconds, waitUntil: new Date(Date.now() + waitSeconds * 1000).toLocaleTimeString() },
+      'Rate limited on startup, delaying scheduler'
+    );
+  }
+
   // Start the queue processor (processes tasks from queues)
   queueProcessor.start(1000); // Process every 1 second
 
   // Start the scheduler (polls Linear and enqueues work)
   // Poll every 60 seconds, check responses every 30 seconds
-  queueScheduler.start();
+  // If rate limited, delay the initial poll
+  if (waitSeconds > 0) {
+    logger.info({ delaySeconds: Math.min(waitSeconds, 60) }, 'Delaying scheduler start due to rate limit');
+    setTimeout(() => {
+      queueScheduler.start();
+      logger.info('Scheduler started after rate limit delay');
+    }, Math.min(waitSeconds, 60) * 1000);
+  } else {
+    queueScheduler.start();
+  }
 
   logger.info('Daemon running with task queue system');
 }

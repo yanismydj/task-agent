@@ -107,16 +107,67 @@ export class LinearApiClient {
 
   /**
    * Query the current rate limit status from Linear API
+   * Returns null if query fails (don't make API calls when already rate limited)
    */
   async queryRateLimitStatus(): Promise<RateLimitInfo | null> {
+    // Don't query if we're already rate limited
+    if (this.isRateLimited()) {
+      return this.lastRateLimitInfo;
+    }
+
     try {
       const client = await this.getClient();
       const status: RateLimitPayload = await client.rateLimitStatus;
-      return this.parseRateLimitPayload(status);
+      const info = this.parseRateLimitPayload(status);
+      this.lastRateLimitInfo = info;
+
+      // If we're low on quota, proactively set rate limit
+      if (info.requestsRemaining < 50 || info.complexityRemaining < 5000) {
+        logger.warn(
+          { requestsRemaining: info.requestsRemaining, complexityRemaining: info.complexityRemaining },
+          'Rate limit quota low, pausing until reset'
+        );
+        this.rateLimitResetAt = info.resetAt;
+      }
+
+      return info;
     } catch (error) {
-      logger.warn({ error }, 'Failed to query rate limit status');
+      // If this fails, it might be because we're rate limited
+      // Set a conservative backoff
+      const errorStr = String(error);
+      if (errorStr.includes('Rate limit') || errorStr.includes('RATELIMITED')) {
+        this.rateLimitResetAt = new Date(Date.now() + 5 * 60 * 1000);
+        logger.warn({ resetAt: this.rateLimitResetAt.toLocaleTimeString() }, 'Rate limited when checking status');
+      }
       return null;
     }
+  }
+
+  /**
+   * Check rate limit status on startup and return seconds to wait (0 if ok)
+   */
+  async checkStartupRateLimit(): Promise<number> {
+    const info = await this.queryRateLimitStatus();
+    if (!info) {
+      // Couldn't query - if we're rate limited, return wait time
+      if (this.rateLimitResetAt) {
+        const waitMs = this.rateLimitResetAt.getTime() - Date.now();
+        return Math.max(0, Math.ceil(waitMs / 1000));
+      }
+      return 0;
+    }
+
+    // If low on quota, return time until reset
+    if (info.requestsRemaining < 50 || info.complexityRemaining < 5000) {
+      const waitMs = info.resetAt.getTime() - Date.now();
+      return Math.max(0, Math.ceil(waitMs / 1000));
+    }
+
+    logger.info(
+      { requestsRemaining: info.requestsRemaining, complexityRemaining: info.complexityRemaining },
+      'Rate limit status OK'
+    );
+    return 0;
   }
 
   /**
@@ -235,19 +286,10 @@ export class LinearApiClient {
           this.rateLimitResetAt = resetAt;
           this.consecutiveErrors++;
 
-          // Try to get detailed rate limit info
-          const rateLimitInfo = await this.queryRateLimitStatus();
-          if (rateLimitInfo) {
-            this.lastRateLimitInfo = rateLimitInfo;
-            // Use the more accurate reset time from the API
-            this.rateLimitResetAt = rateLimitInfo.resetAt;
-          }
-
+          // Don't make additional API calls when rate limited - just use the extracted info
           logger.warn(
             {
               resetAt: this.rateLimitResetAt.toLocaleTimeString(),
-              requestsRemaining: rateLimitInfo?.requestsRemaining,
-              complexityRemaining: rateLimitInfo?.complexityRemaining,
               consecutiveErrors: this.consecutiveErrors,
             },
             'Linear rate limit hit'
