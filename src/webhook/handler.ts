@@ -11,6 +11,14 @@ const logger = createChildLogger({ module: 'webhook-handler' });
 // Using 4 seconds gives us a 1 second buffer
 const WEBHOOK_TIMEOUT_MS = 4000;
 
+// Debounce delay for checkbox changes - wait this long after the last checkbox change
+// before triggering re-evaluation. This gives users time to answer all questions.
+const CHECKBOX_DEBOUNCE_MS = 60 * 1000; // 60 seconds
+
+// Track pending checkbox debounce timers per ticket
+const checkboxDebounceTimers = new Map<string, NodeJS.Timeout>();
+const lastCheckboxChange = new Map<string, Date>();
+
 /**
  * Execute a handler with a timeout to ensure we respond to Linear within 5 seconds
  * If the handler takes too long, we log a warning but don't fail the response
@@ -218,30 +226,50 @@ async function handleCommentUpdate(data: WebhookCommentData): Promise<void> {
     const hasCheckedBoxes = data.body.includes('[X]') || data.body.includes('[x]');
 
     if (hasCheckedBoxes) {
-      logger.info(
-        { issueId: data.issueId, commentId: data.id },
-        'User checked checkbox in TaskAgent question - treating as response'
-      );
-
-      // Enqueue response check for this ticket
       const issueId = data.issueId;
 
-      // Check if we already have a response check queued
-      if (linearQueue.hasActiveTask(issueId, 'check_response')) {
-        logger.debug({ issueId }, 'Already have response check queued');
-        return;
+      logger.info(
+        { issueId, commentId: data.id },
+        'User checked checkbox in TaskAgent question - debouncing before processing'
+      );
+
+      // Record this checkbox change
+      lastCheckboxChange.set(issueId, new Date());
+
+      // Clear any existing debounce timer for this ticket
+      const existingTimer = checkboxDebounceTimers.get(issueId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        logger.debug({ issueId }, 'Cleared existing checkbox debounce timer');
       }
 
-      // Enqueue response check
-      linearQueue.enqueue({
-        ticketId: issueId,
-        ticketIdentifier: `webhook-${issueId}`,
-        taskType: 'check_response',
-        priority: 1, // High priority for human responses
-        inputData: { waitingFor: 'questions' },
-      });
+      // Set a new debounce timer - only trigger after user stops checking boxes
+      const timer = setTimeout(() => {
+        checkboxDebounceTimers.delete(issueId);
 
-      logger.info({ issueId }, 'Enqueued response check from checkbox update');
+        logger.info({ issueId }, 'Checkbox debounce timer fired - checking for response');
+
+        // Check if we already have a response check queued
+        if (linearQueue.hasActiveTask(issueId, 'check_response')) {
+          logger.debug({ issueId }, 'Already have response check queued');
+          return;
+        }
+
+        // Enqueue response check
+        linearQueue.enqueue({
+          ticketId: issueId,
+          ticketIdentifier: `webhook-${issueId}`,
+          taskType: 'check_response',
+          priority: 1, // High priority for human responses
+          inputData: { waitingFor: 'questions' },
+        });
+
+        logger.info({ issueId }, 'Enqueued response check from checkbox update (after debounce)');
+      }, CHECKBOX_DEBOUNCE_MS);
+
+      checkboxDebounceTimers.set(issueId, timer);
+      logger.debug({ issueId, debounceMs: CHECKBOX_DEBOUNCE_MS }, 'Set checkbox debounce timer');
+
       return;
     }
 

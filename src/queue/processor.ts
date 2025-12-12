@@ -316,6 +316,41 @@ export class QueueProcessor {
     // Use cached comments if available
     const comments = await linearClient.getCommentsCached(task.ticketId);
 
+    // Provide codebase context so the refiner doesn't ask basic questions
+    // that can be answered by looking at the repo
+    const codebaseContext = `This is the TaskAgent codebase - a system that automates Linear ticket processing using Claude.
+
+**Tech Stack (DO NOT ask questions about these - they are already decided):**
+- Language: TypeScript (Node.js)
+- Database: SQLite (better-sqlite3) for local state tracking
+- APIs: Linear SDK (@linear/sdk), Anthropic SDK
+- Build: TypeScript compiler (tsc), tsx for development
+- Testing: Vitest (if tests exist)
+
+**Architecture:**
+- src/linear/ - Linear API client and caching
+- src/agents/ - AI agents (readiness scorer, ticket refiner, prompt generator)
+- src/queue/ - Task queue management (SQLite-backed)
+- src/webhook/ - Linear webhook handling
+- src/workflow/ - Orchestration logic
+
+**Key Files:**
+- src/queue/processor.ts - Main task processing logic
+- src/linear/client.ts - Linear API wrapper
+- src/agents/impl/ - Agent implementations
+
+**DO NOT ask about:**
+- Database technology (it's SQLite)
+- API/SDK choices (Linear SDK, Anthropic SDK)
+- Language/framework (TypeScript/Node.js)
+- State storage approach (SQLite tables)
+
+**ONLY ask about:**
+- Business logic decisions (what should happen when X?)
+- User experience choices (how should users interact?)
+- Edge cases and error handling preferences
+- Scope clarification (what's in/out of scope?)`;
+
     const input: AgentInput<TicketRefinerInput> = {
       ticketId: task.ticketId,
       ticketIdentifier: task.ticketIdentifier,
@@ -328,6 +363,7 @@ export class QueueProcessor {
           createdAt: c.createdAt,
           isFromTaskAgent: c.user?.isMe || hasTaskAgentTag(c.body),
         })),
+        codebaseContext,
       },
     };
 
@@ -413,25 +449,83 @@ export class QueueProcessor {
         const questionComments = ticketRefinerAgent.formatQuestionsAsComments(refinement);
 
         if (questionComments.length > 0) {
-          // Post each question as a separate comment for easy reply
-          for (const comment of questionComments) {
-            await linearClient.addComment(task.ticketId, comment);
-          }
+          // Filter out questions that have already been asked (check against cached comments)
+          const existingCommentBodies = comments.map(c => c.body);
+          const newQuestions = questionComments.filter(questionComment => {
+            // Extract the core question text (first line after the tag)
+            const questionLines = questionComment.split('\n').filter(l => l.trim());
+            const questionText = questionLines.find(l => !l.includes('[TaskAgent]'))?.trim() || '';
 
-          await this.syncLabel(task.ticketId, 'ta:awaiting-response');
-          this.callbacks.onStateChange?.(task.ticketId, 'awaiting_response');
+            // Check if this question (or very similar) already exists in comments
+            const isDuplicate = existingCommentBodies.some(existingBody => {
+              // Check if the existing comment contains the same question text
+              if (existingBody.includes(questionText) && questionText.length > 20) {
+                return true;
+              }
+              // Also check for the full comment match
+              if (existingBody === questionComment) {
+                return true;
+              }
+              return false;
+            });
 
-          // Register that we're waiting for questions (scheduler will check periodically)
-          queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
-
-          linearQueue.enqueue({
-            ticketId: task.ticketId,
-            ticketIdentifier: task.ticketIdentifier,
-            taskType: 'check_response',
-            priority: task.priority,
-            readinessScore: readiness.score,
-            inputData: { waitingFor: 'questions', readiness },
+            if (isDuplicate) {
+              logger.debug(
+                { ticketId: task.ticketIdentifier, questionPreview: questionText.slice(0, 50) },
+                'Skipping duplicate question'
+              );
+            }
+            return !isDuplicate;
           });
+
+          if (newQuestions.length > 0) {
+            logger.info(
+              {
+                ticketId: task.ticketIdentifier,
+                totalQuestions: questionComments.length,
+                newQuestions: newQuestions.length,
+                skippedDuplicates: questionComments.length - newQuestions.length
+              },
+              'Posting new questions (filtered duplicates)'
+            );
+
+            // Post each NEW question as a separate comment
+            for (const comment of newQuestions) {
+              await linearClient.addComment(task.ticketId, comment);
+            }
+
+            await this.syncLabel(task.ticketId, 'ta:awaiting-response');
+            this.callbacks.onStateChange?.(task.ticketId, 'awaiting_response');
+
+            // Register that we're waiting for questions (scheduler will check periodically)
+            queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
+
+            linearQueue.enqueue({
+              ticketId: task.ticketId,
+              ticketIdentifier: task.ticketIdentifier,
+              taskType: 'check_response',
+              priority: task.priority,
+              readinessScore: readiness.score,
+              inputData: { waitingFor: 'questions', readiness },
+            });
+          } else {
+            logger.info(
+              { ticketId: task.ticketIdentifier },
+              'All questions were duplicates - skipping, will check for responses'
+            );
+            // All questions were duplicates - just wait for responses to existing questions
+            await this.syncLabel(task.ticketId, 'ta:awaiting-response');
+            queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
+
+            linearQueue.enqueue({
+              ticketId: task.ticketId,
+              ticketIdentifier: task.ticketIdentifier,
+              taskType: 'check_response',
+              priority: task.priority,
+              readinessScore: readiness.score,
+              inputData: { waitingFor: 'questions', readiness },
+            });
+          }
         }
       }
     }
@@ -880,6 +974,21 @@ export class QueueProcessor {
     // Mark as pending before making the API call
     pendingApprovalRequests.add(task.ticketId);
 
+    // Resolve all TaskAgent question comments (their content has been incorporated into the description)
+    const questionCommentIds = comments
+      .filter((c) => hasTaskAgentTag(c.body) && (
+        c.body.includes('❗') || c.body.includes('❓') || c.body.includes('💭')
+      ))
+      .map((c) => c.id);
+
+    if (questionCommentIds.length > 0) {
+      logger.info(
+        { ticketId: task.ticketIdentifier, count: questionCommentIds.length },
+        'Resolving TaskAgent question comments'
+      );
+      await linearClient.resolveComments(questionCommentIds);
+    }
+
     const commentBody = `${APPROVAL_TAG}
 
 Ready to start (score: ${readiness.score}/100). React with 👍 to approve or 👎 to skip.`;
@@ -966,18 +1075,14 @@ Ready to start (score: ${readiness.score}/100). React with 👍 to approve or �
 
   /**
    * Check if we've already posted questions that haven't been answered yet
+   * Questions are considered unanswered if they have checkboxes that haven't been checked
    */
   private hasUnansweredQuestions(
     comments: Array<{ body: string; createdAt: Date; user: { isMe: boolean } | null }>
   ): boolean {
-    // Find the most recent TaskAgent question comment (identified by emoji markers)
-    const sortedComments = [...comments].sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
-    );
-
     // Question comments use emoji markers: ❗ (critical), ❓ (important), 💭 (nice to have)
     // Check for TaskAgent tag in body since isMe may not be reliable for cached comments
-    const questionComments = sortedComments.filter(
+    const questionComments = comments.filter(
       (c) => hasTaskAgentTag(c.body) && (
         c.body.includes('❗') || c.body.includes('❓') || c.body.includes('💭')
       )
@@ -987,26 +1092,24 @@ Ready to start (score: ${readiness.score}/100). React with 👍 to approve or �
       return false;
     }
 
-    const lastQuestionComment = questionComments[0]!;
+    // Check if ANY question comment has unchecked boxes
+    // A question with checkboxes is unanswered if it has [ ] but no [X] or [x]
+    const hasUncheckedBoxes = questionComments.some((c) => {
+      const hasCheckboxes = c.body.includes('[ ]') || c.body.includes('[X]') || c.body.includes('[x]');
+      if (!hasCheckboxes) {
+        // Question without checkboxes - consider it a free-form question
+        // These are harder to track, so we'll be conservative and say unanswered
+        return true;
+      }
+      // Has checkboxes - check if any are still unchecked
+      const hasUnchecked = c.body.includes('[ ]');
+      const hasChecked = c.body.includes('[X]') || c.body.includes('[x]');
+      // Unanswered if has unchecked boxes AND no checked boxes (user hasn't started answering)
+      // If user has checked at least one box, consider it in-progress/answered
+      return hasUnchecked && !hasChecked;
+    });
 
-    // Check if there are any non-TaskAgent comments after the question
-    const hasResponseAfterQuestion = sortedComments.some(
-      (c) => !hasTaskAgentTag(c.body) &&
-             !c.body.includes(APPROVAL_TAG) &&
-             c.createdAt > lastQuestionComment.createdAt
-    );
-
-    // Also check if any question comments have checked checkboxes
-    // When users check boxes in Linear, the comment is edited in place
-    const hasCheckedBoxes = questionComments.some(
-      (c) => c.body.includes('[X]') || c.body.includes('[x]')
-    );
-
-    // Questions are answered if there's a response comment OR checked boxes
-    const hasBeenAnswered = hasResponseAfterQuestion || hasCheckedBoxes;
-
-    // If no answer yet, we have unanswered questions
-    return !hasBeenAnswered;
+    return hasUncheckedBoxes;
   }
 }
 

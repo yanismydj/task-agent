@@ -38,7 +38,7 @@ const ConfigSchema = z.object({
   }),
   agents: z.object({
     maxConcurrent: z.number().int().min(1).max(20).default(5),
-    maxCodeExecutors: z.number().int().min(1).max(10).default(2),
+    maxCodeExecutors: z.number().int().min(0).max(10).default(2), // 0 = Linear analysis only, no Claude Code execution
     workDir: z.string().min(1, 'AGENTS_WORK_DIR is required'),
     timeoutMinutes: z.number().int().min(1).default(60),
     maxRetries: z.number().int().min(0).default(2),

@@ -691,6 +691,34 @@ export class LinearApiClient {
     logger.info({ issueId }, 'Updated ticket description');
   }
 
+  /**
+   * Resolve a comment thread (mark as resolved)
+   */
+  async resolveComment(commentId: string): Promise<void> {
+    logger.debug({ commentId }, 'Resolving comment');
+    await this.withRetry(async (client) => {
+      await client.commentResolve(commentId);
+    });
+    logger.debug({ commentId }, 'Resolved comment');
+  }
+
+  /**
+   * Resolve multiple comments
+   */
+  async resolveComments(commentIds: string[]): Promise<void> {
+    if (commentIds.length === 0) return;
+
+    logger.info({ count: commentIds.length }, 'Resolving comments');
+    for (const commentId of commentIds) {
+      try {
+        await this.resolveComment(commentId);
+      } catch (error) {
+        logger.warn({ commentId, error }, 'Failed to resolve comment (non-fatal)');
+      }
+    }
+    logger.info({ count: commentIds.length }, 'Resolved comments');
+  }
+
   async addLabel(issueId: string, labelName: string): Promise<void> {
     await this.withRetry(async (client) => {
       const issue = await client.issue(issueId);
