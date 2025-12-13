@@ -1,8 +1,12 @@
 import http from 'node:http';
 import fs from 'node:fs';
-import path from 'node:path';
 import { URL } from 'node:url';
 import { createChildLogger } from '../utils/logger.js';
+import {
+  getTokenPath,
+  getLegacyTokenPath,
+  migrateLegacyFile,
+} from '../utils/paths.js';
 
 const logger = createChildLogger({ module: 'linear-auth' });
 
@@ -49,7 +53,14 @@ export class LinearAuth {
   constructor(config: LinearAuthConfig) {
     this.clientId = config.clientId;
     this.clientSecret = config.clientSecret;
-    this.tokenStorePath = config.tokenStorePath || path.join(process.cwd(), '.task-agent-token.json');
+    this.tokenStorePath = config.tokenStorePath || getTokenPath();
+
+    // Migrate from legacy path if needed
+    const legacyPath = getLegacyTokenPath();
+    if (migrateLegacyFile(legacyPath, this.tokenStorePath)) {
+      logger.info({ from: legacyPath, to: this.tokenStorePath }, 'Migrated OAuth token from legacy path');
+    }
+
     this.loadToken();
   }
 

@@ -3,10 +3,9 @@ import { mkdir, rm, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../config.js';
 import { createChildLogger } from '../utils/logger.js';
+import { getWorktreesDir } from '../utils/paths.js';
 
 const logger = createChildLogger({ module: 'worktree-manager' });
-
-const WORKTREE_DIR = '.task-agent/worktrees';
 
 export class WorktreeManager {
   private baseDir: string;
@@ -14,7 +13,7 @@ export class WorktreeManager {
 
   constructor() {
     this.baseDir = config.agents.workDir;
-    this.worktreeBaseDir = join(this.baseDir, WORKTREE_DIR);
+    this.worktreeBaseDir = getWorktreesDir(this.baseDir);
   }
 
   async create(ticketIdentifier: string): Promise<{ path: string; branch: string }> {
@@ -79,7 +78,7 @@ export class WorktreeManager {
       const lines = output.split('\n');
 
       for (const line of lines) {
-        if (line.startsWith('worktree ') && line.includes(WORKTREE_DIR)) {
+        if (line.startsWith('worktree ') && line.includes(this.worktreeBaseDir)) {
           worktrees.push(line.replace('worktree ', ''));
         }
       }

@@ -96,11 +96,27 @@ export class LinearCache {
 
   /**
    * Get all cached tickets matching criteria
+   * By default, excludes canceled and duplicate state issues
+   * Use includeAllStates: true for admin/debug access to all tickets
    */
-  getTickets(options?: { stateType?: string; hasLabel?: string }): TicketInfo[] {
+  getTickets(options?: {
+    stateType?: string;
+    hasLabel?: string;
+    includeAllStates?: boolean;
+  }): TicketInfo[] {
     const db = getDatabase();
     let sql = 'SELECT * FROM linear_tickets_cache WHERE 1=1';
     const params: string[] = [];
+
+    // Default filtering: exclude canceled and duplicate states
+    // Unless explicitly requesting all states (for admin/debug)
+    if (!options?.includeAllStates) {
+      sql += ' AND (state_type IS NULL OR state_type NOT IN (?, ?))';
+      params.push('canceled', 'completed');
+      // Also exclude tickets with state name containing 'duplicate' (case-insensitive)
+      sql += ' AND (state_name IS NULL OR LOWER(state_name) NOT LIKE ?)';
+      params.push('%duplicate%');
+    }
 
     if (options?.stateType) {
       sql += ' AND state_type = ?';

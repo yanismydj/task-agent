@@ -8,8 +8,7 @@ dist/
 .env
 .env.local
 
-# OAuth token storage
-.task-agent-token.json
+# OAuth token storage (legacy, now in .taskagent/token.json)
 
 # IDE
 .idea/
@@ -25,13 +24,23 @@ Thumbs.db
 *.log
 logs/
 
-# Task Agent working directories and cache
+# TaskAgent internal files
+# The .taskagent/ directory structure is tracked, but runtime files are ignored
+.taskagent/queue.db
+.taskagent/queue.db-wal
+.taskagent/queue.db-shm
+.taskagent/token.json
+.taskagent/cache/
+.taskagent/worktrees/
+
+# Legacy paths (will be auto-migrated on first run)
 .task-agent/
 .task-agent-queue.db
 .task-agent-queue.db-wal
 .task-agent-queue.db-shm
 .task-agent.db
 .task-agent-repo-summary.json
+.task-agent-token.json
 
 # Beads issue tracking (local only)
 .beads/

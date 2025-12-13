@@ -23,7 +23,33 @@ import { execSync, spawn } from 'node:child_process';
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '..');
 const ENV_EXAMPLE_PATH = path.join(PROJECT_ROOT, '.env.example');
 const ENV_PATH = path.join(PROJECT_ROOT, '.env');
-const REPO_SUMMARY_PATH = path.join(PROJECT_ROOT, '.task-agent-repo-summary.json');
+const TASKAGENT_DIR = path.join(PROJECT_ROOT, '.taskagent');
+const REPO_SUMMARY_PATH = path.join(TASKAGENT_DIR, 'repo-summary.json');
+const TOKEN_PATH = path.join(TASKAGENT_DIR, 'token.json');
+const LEGACY_REPO_SUMMARY_PATH = path.join(PROJECT_ROOT, '.task-agent-repo-summary.json');
+const LEGACY_TOKEN_PATH = path.join(PROJECT_ROOT, '.task-agent-token.json');
+
+// Ensure .taskagent directory exists
+function ensureTaskAgentDir(): void {
+  if (!fs.existsSync(TASKAGENT_DIR)) {
+    fs.mkdirSync(TASKAGENT_DIR, { recursive: true });
+  }
+}
+
+// Migrate legacy files to new locations
+function migrateLegacyFiles(): void {
+  ensureTaskAgentDir();
+
+  if (fs.existsSync(LEGACY_REPO_SUMMARY_PATH) && !fs.existsSync(REPO_SUMMARY_PATH)) {
+    fs.renameSync(LEGACY_REPO_SUMMARY_PATH, REPO_SUMMARY_PATH);
+    console.log(`  ${icons.info} Migrated repo summary to ${REPO_SUMMARY_PATH}`);
+  }
+
+  if (fs.existsSync(LEGACY_TOKEN_PATH) && !fs.existsSync(TOKEN_PATH)) {
+    fs.renameSync(LEGACY_TOKEN_PATH, TOKEN_PATH);
+    console.log(`  ${icons.info} Migrated OAuth token to ${TOKEN_PATH}`);
+  }
+}
 
 // ANSI colors
 const colors = {
@@ -1456,10 +1482,9 @@ function verifySetup(env: Map<string, string>): boolean {
     }
   }
 
-  // Check token file if OAuth
+  // Check token file if OAuth (check both new and legacy paths)
   if (hasOAuth) {
-    const tokenPath = path.join(PROJECT_ROOT, '.task-agent-token.json');
-    if (fs.existsSync(tokenPath)) {
+    if (fs.existsSync(TOKEN_PATH) || fs.existsSync(LEGACY_TOKEN_PATH)) {
       printSuccess('OAuth token file exists');
     } else {
       printWarning('OAuth token not found (run: npm run auth)');
@@ -1474,7 +1499,7 @@ function printNextSteps(env: Map<string, string>): void {
 
   const webhooksEnabled = env.get('WEBHOOK_ENABLED') === 'true';
   const hasOAuth = env.get('LINEAR_CLIENT_ID') && env.get('LINEAR_CLIENT_SECRET');
-  const tokenExists = fs.existsSync(path.join(PROJECT_ROOT, '.task-agent-token.json'));
+  const tokenExists = fs.existsSync(TOKEN_PATH) || fs.existsSync(LEGACY_TOKEN_PATH);
 
   console.log(`${colors.bold}Next Steps:${colors.reset}\n`);
 
@@ -1514,6 +1539,9 @@ async function main(): Promise<void> {
 
   try {
     printHeader();
+
+    // Migrate any legacy files to new .taskagent directory
+    migrateLegacyFiles();
 
     // Step 1: Check prerequisites
     const prereqOk = await checkPrerequisites();

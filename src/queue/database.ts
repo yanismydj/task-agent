@@ -1,6 +1,10 @@
 import Database from 'better-sqlite3';
-import path from 'node:path';
 import { createChildLogger } from '../utils/logger.js';
+import {
+  getQueueDbPath,
+  getLegacyQueueDbPath,
+  migrateLegacyFile,
+} from '../utils/paths.js';
 
 const logger = createChildLogger({ module: 'queue-database' });
 
@@ -282,7 +286,17 @@ export function initDatabase(dbPath?: string): Database.Database {
     return db;
   }
 
-  const resolvedPath = dbPath || path.join(process.cwd(), '.task-agent-queue.db');
+  // Use new .taskagent/ path, falling back to provided path
+  const resolvedPath = dbPath || getQueueDbPath();
+
+  // Migrate from legacy path if needed
+  const legacyPath = getLegacyQueueDbPath();
+  if (migrateLegacyFile(legacyPath, resolvedPath)) {
+    logger.info({ from: legacyPath, to: resolvedPath }, 'Migrated database from legacy path');
+    // Also migrate WAL files if they exist
+    migrateLegacyFile(legacyPath + '-wal', resolvedPath + '-wal');
+    migrateLegacyFile(legacyPath + '-shm', resolvedPath + '-shm');
+  }
 
   logger.info({ dbPath: resolvedPath }, 'Initializing task queue database');
 

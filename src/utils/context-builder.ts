@@ -2,7 +2,7 @@
  * Dual-Context Builder for TaskAgent
  *
  * Builds combined context from:
- * 1. Static repo summary file (.task-agent-repo-summary.json)
+ * 1. Static repo summary file (.taskagent/repo-summary.json)
  * 2. Dynamic Linear tickets (recently completed work)
  *
  * Features:
@@ -12,8 +12,12 @@
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
 import { createChildLogger } from './logger.js';
+import {
+  getRepoSummaryPath as getRepoSummaryPathFromPaths,
+  getLegacyRepoSummaryPath,
+  migrateLegacyFile,
+} from './paths.js';
 import type { LinearApiClient } from '../linear/client.js';
 
 const logger = createChildLogger({ module: 'context-builder' });
@@ -192,7 +196,13 @@ export async function buildDualContextWithMetadata(
 // ═══════════════════════════════════════════════════════════════════════════
 
 function loadRepoSummary(workDir: string): EnhancedRepoSummary | null {
-  const summaryPath = path.join(workDir, '.task-agent-repo-summary.json');
+  const summaryPath = getRepoSummaryPathFromPaths(workDir);
+  const legacyPath = getLegacyRepoSummaryPath(workDir);
+
+  // Migrate from legacy path if needed
+  if (migrateLegacyFile(legacyPath, summaryPath)) {
+    logger.info({ from: legacyPath, to: summaryPath }, 'Migrated repo summary from legacy path');
+  }
 
   try {
     if (!fs.existsSync(summaryPath)) {
@@ -471,16 +481,18 @@ export function estimateTokens(text: string): number {
 }
 
 /**
- * Check if repo summary file exists
+ * Check if repo summary file exists (checks both new and legacy paths)
  */
 export function hasRepoSummary(workDir: string): boolean {
-  const summaryPath = path.join(workDir, '.task-agent-repo-summary.json');
-  return fs.existsSync(summaryPath);
+  const summaryPath = getRepoSummaryPathFromPaths(workDir);
+  const legacyPath = getLegacyRepoSummaryPath(workDir);
+  return fs.existsSync(summaryPath) || fs.existsSync(legacyPath);
 }
 
 /**
  * Get repo summary path for a work directory
+ * Re-exported from paths module for backward compatibility
  */
 export function getRepoSummaryPath(workDir: string): string {
-  return path.join(workDir, '.task-agent-repo-summary.json');
+  return getRepoSummaryPathFromPaths(workDir);
 }

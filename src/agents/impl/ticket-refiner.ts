@@ -39,6 +39,7 @@ Guidelines:
 - Keep questions short and specific
 - Only ask open-ended questions when options aren't feasible
 - Prioritize: 'critical' (blocking), 'important' (should clarify), 'nice_to_have'
+- If suggesting a description, keep it to 150-300 words maximum
 
 **CRITICAL SCORE RULE**: If the readiness score is below 70, you MUST ask clarifying questions.
 Only recommend action 'ready' if:
@@ -86,7 +87,7 @@ const REFINER_SCHEMA = {
     },
     suggestedDescription: {
       type: 'string',
-      description: 'An improved version of the ticket description (optional)',
+      description: 'An improved version of the ticket description (optional, 150-300 words max)',
     },
     suggestedAcceptanceCriteria: {
       type: 'array',

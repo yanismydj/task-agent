@@ -1,12 +1,11 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
-import fs from 'node:fs';
 import { createChildLogger } from '../../utils/logger.js';
+import { getCacheDir } from '../../utils/paths.js';
 import type { AgentType, AgentOutput } from './types.js';
 
 const logger = createChildLogger({ module: 'agent-cache' });
 
-const CACHE_DIR = '.task-agent';
 const CACHE_FILE = 'agent-cache.db';
 
 // Default TTLs by agent type (in milliseconds)
@@ -31,11 +30,8 @@ export class AgentCache {
   private db: Database.Database;
 
   constructor() {
-    const cacheDir = path.join(process.cwd(), CACHE_DIR);
-    if (!fs.existsSync(cacheDir)) {
-      fs.mkdirSync(cacheDir, { recursive: true });
-    }
-
+    // getCacheDir() ensures the directory exists
+    const cacheDir = getCacheDir();
     const dbPath = path.join(cacheDir, CACHE_FILE);
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
