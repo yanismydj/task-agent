@@ -35,19 +35,22 @@ export class QueueScheduler {
   private running = false;
   private pollInterval: NodeJS.Timeout | null = null;
   private fullSyncInterval: NodeJS.Timeout | null = null;
-  private pollIntervalMs: number;
-  private fullSyncIntervalMs: number;
 
   // Track tickets we're waiting for responses on (webhooks will notify us)
   private ticketsAwaitingResponse: Map<string, { ticketId: string; identifier: string; waitingFor: string; lastChecked: Date }> = new Map();
 
-  constructor(pollIntervalMs = DEFAULT_POLL_INTERVAL_MS, fullSyncIntervalMs = DEFAULT_FULL_SYNC_INTERVAL_MS) {
-    this.pollIntervalMs = pollIntervalMs;
-    this.fullSyncIntervalMs = fullSyncIntervalMs;
+  // Note: Constructor params kept for API compatibility but polling is disabled in mention-triggered mode
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  constructor(_pollIntervalMs = DEFAULT_POLL_INTERVAL_MS, _fullSyncIntervalMs = DEFAULT_FULL_SYNC_INTERVAL_MS) {
+    // Polling intervals not stored - automatic polling is disabled
   }
 
   /**
    * Start the scheduler
+   *
+   * NOTE: Automatic polling is DISABLED. TaskAgent now operates in mention-triggered mode.
+   * Users must @taskAgent in Linear comments to trigger actions.
+   * The scheduler still handles the awaiting response registry for webhook processing.
    */
   start(): void {
     if (this.running) {
@@ -56,30 +59,26 @@ export class QueueScheduler {
     }
 
     this.running = true;
-    logger.info(
-      {
-        pollIntervalMs: this.pollIntervalMs,
-        fullSyncIntervalMs: this.fullSyncIntervalMs,
-        pollIntervalSeconds: Math.round(this.pollIntervalMs / 1000),
-        fullSyncIntervalMinutes: Math.round(this.fullSyncIntervalMs / 60000),
-      },
-      'Starting queue scheduler (webhook-optimized mode)'
-    );
+    logger.info('Starting queue scheduler (mention-triggered mode - automatic polling disabled)');
 
-    // Initial full sync after a short delay to populate cache
+    // DISABLED: Automatic polling - now mention-triggered only via @taskAgent
+    // Users trigger actions by commenting "@taskAgent clarify|rewrite|work" on tickets.
+    // Webhooks handle the detection and routing to appropriate task handlers.
+
+    // Initial sync still useful to populate cache for context lookups
     setTimeout(() => {
       this.fullSyncWithLinear();
     }, 2000);
 
-    // Fast local poll - checks SQLite cache for new work (no API calls)
-    this.pollInterval = setInterval(() => {
-      this.pollLocalCache();
-    }, this.pollIntervalMs);
+    // DISABLED: Local cache polling
+    // this.pollInterval = setInterval(() => {
+    //   this.pollLocalCache();
+    // }, this.pollIntervalMs);
 
-    // Periodic full sync with Linear API for consistency
-    this.fullSyncInterval = setInterval(() => {
-      this.fullSyncWithLinear();
-    }, this.fullSyncIntervalMs);
+    // DISABLED: Periodic full sync for auto-evaluation
+    // this.fullSyncInterval = setInterval(() => {
+    //   this.fullSyncWithLinear();
+    // }, this.fullSyncIntervalMs);
   }
 
   /**

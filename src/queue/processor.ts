@@ -152,6 +152,12 @@ export class QueueProcessor {
         case 'refine':
           await this.handleRefine(task);
           break;
+        case 'consolidate':
+          await this.handleConsolidate(task);
+          break;
+        case 'execute':
+          await this.handleExecuteDirect(task);
+          break;
         case 'check_response':
           await this.handleCheckResponse(task);
           break;
@@ -512,6 +518,171 @@ export class QueueProcessor {
         }
       }
     }
+  }
+
+  /**
+   * Handle the @taskAgent rewrite command - consolidate discussion into updated description.
+   * This is triggered directly by user mention, not through the auto-evaluation flow.
+   */
+  private async handleConsolidate(task: LinearQueueItem): Promise<void> {
+    const ticket = await linearClient.getTicketCached(task.ticketId);
+    if (!ticket) {
+      linearQueue.fail(task.id, 'Ticket not found');
+      return;
+    }
+
+    const comments = await linearClient.getCommentsCached(task.ticketId);
+
+    logger.info(
+      { ticketId: task.ticketIdentifier, commentCount: comments.length },
+      'Consolidating discussion into description (@taskAgent rewrite)'
+    );
+
+    // Build input for consolidator
+    const input: AgentInput<DescriptionConsolidatorInput> = {
+      ticketId: task.ticketId,
+      ticketIdentifier: task.ticketIdentifier,
+      data: {
+        title: ticket.title,
+        originalDescription: ticket.description || '',
+        comments: comments.map((c) => ({
+          body: c.body,
+          isFromTaskAgent: isTaskAgentComment(c.user),
+          createdAt: c.createdAt,
+        })),
+      },
+    };
+
+    const result = await descriptionConsolidatorAgent.execute(input);
+
+    if (!result.success || !result.data) {
+      linearQueue.fail(task.id, result.error || 'Consolidation failed');
+      await linearClient.addComment(
+        task.ticketId,
+        `Failed to consolidate description: ${result.error || 'Unknown error'}`
+      );
+      return;
+    }
+
+    // Update the ticket description
+    await linearClient.updateDescription(task.ticketId, result.data.consolidatedDescription);
+
+    // Update title if suggested and valid
+    const suggestedTitle = result.data.suggestedTitle;
+    if (suggestedTitle && suggestedTitle !== ticket.title) {
+      const isValidTitle = suggestedTitle.length >= 10 && /[a-zA-Z]{3,}/.test(suggestedTitle);
+      if (isValidTitle) {
+        await linearClient.updateTitle(task.ticketId, suggestedTitle);
+        logger.info(
+          { ticketId: task.ticketIdentifier, oldTitle: ticket.title, newTitle: suggestedTitle },
+          'Ticket title updated'
+        );
+      }
+    }
+
+    // Post confirmation comment
+    await linearClient.addComment(
+      task.ticketId,
+      `Updated the description based on our discussion.${suggestedTitle && suggestedTitle !== ticket.title ? `\n\nAlso updated title to: "${suggestedTitle}"` : ''}`
+    );
+
+    linearQueue.complete(task.id, result.data);
+    logger.info({ ticketId: task.ticketIdentifier }, 'Description consolidated successfully');
+  }
+
+  /**
+   * Handle the @taskAgent work command - start execution directly without approval flow.
+   * This generates the prompt and immediately starts Claude Code.
+   */
+  private async handleExecuteDirect(task: LinearQueueItem): Promise<void> {
+    const ticket = await linearClient.getTicketCached(task.ticketId);
+    if (!ticket) {
+      linearQueue.fail(task.id, 'Ticket not found');
+      return;
+    }
+
+    logger.info(
+      { ticketId: task.ticketIdentifier },
+      'Starting direct execution (@taskAgent work)'
+    );
+
+    // Post acknowledgement
+    await linearClient.addComment(task.ticketId, 'Starting work on this ticket...');
+
+    // Generate the prompt
+    const promptInput: AgentInput<PromptGeneratorInput> = {
+      ticketId: task.ticketId,
+      ticketIdentifier: task.ticketIdentifier,
+      data: {
+        ticket: {
+          identifier: ticket.identifier,
+          title: ticket.title,
+          description: ticket.description || '',
+        },
+        constraints: {
+          branchNaming: `task-agent/${ticket.identifier.toLowerCase()}`,
+        },
+      },
+      context: { updatedAt: ticket.updatedAt },
+    };
+
+    const promptResult = await promptGeneratorAgent.execute(promptInput);
+
+    if (!promptResult.success || !promptResult.data) {
+      linearQueue.fail(task.id, promptResult.error || 'Prompt generation failed');
+      await this.syncLabel(task.ticketId, 'ta:failed');
+      await linearClient.addComment(
+        task.ticketId,
+        `Failed to generate execution prompt: ${promptResult.error || 'Unknown error'}`
+      );
+      return;
+    }
+
+    // Set issue to In Progress
+    await linearClient.setIssueInProgress(task.ticketId);
+    await this.syncLabel(task.ticketId, 'task-agent');
+
+    // Create agent session
+    const session = await linearClient.createAgentSession(task.ticketId);
+    if (session) {
+      agentSessions.set(task.ticketId, session.id);
+      await linearClient.addAgentActivity(session.id, 'thought', {
+        message: 'Starting work on this ticket...',
+      });
+    }
+
+    // Create worktree and enqueue execution
+    const worktree = await worktreeManager.create(ticket.identifier);
+
+    logger.info(
+      { ticketId: ticket.identifier, worktreePath: worktree.path, branchName: worktree.branch },
+      'Enqueueing Claude Code execution (direct from @taskAgent work)'
+    );
+
+    const enqueuedTask = claudeQueue.enqueue({
+      ticketId: task.ticketId,
+      ticketIdentifier: ticket.identifier,
+      priority: task.priority,
+      prompt: promptResult.data.prompt,
+      worktreePath: worktree.path,
+      branchName: worktree.branch,
+      agentSessionId: session?.id,
+    });
+
+    if (enqueuedTask) {
+      logger.info(
+        { ticketId: ticket.identifier, taskId: enqueuedTask.id },
+        'Successfully enqueued Claude Code execution'
+      );
+    } else {
+      logger.error(
+        { ticketId: ticket.identifier },
+        'Failed to enqueue Claude Code execution - task may already exist'
+      );
+    }
+
+    linearQueue.complete(task.id, promptResult.data);
+    this.callbacks.onStateChange?.(task.ticketId, 'executing');
   }
 
   private async handleCheckResponse(task: LinearQueueItem): Promise<void> {

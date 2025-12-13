@@ -374,8 +374,10 @@ export type TaskStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'ca
 // Linear ticket task types
 export type LinearTaskType =
   | 'evaluate'        // Run readiness scorer
-  | 'refine'          // Run ticket refiner
-  | 'check_response'  // Check for human response
+  | 'refine'          // Run ticket refiner (also: @taskAgent clarify)
+  | 'consolidate'     // Consolidate discussion into description (@taskAgent rewrite)
+  | 'execute'         // Start Claude Code directly (@taskAgent work)
+  | 'check_response'  // Check for human response (deprecated)
   | 'generate_prompt' // Generate execution prompt
   | 'sync_state';     // Sync state to Linear
 

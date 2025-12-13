@@ -6,6 +6,7 @@ import { linearCache } from '../linear/cache.js';
 import { descriptionApprovalManager } from '../queue/description-approvals.js';
 import { linearClient } from '../linear/client.js';
 import { ticketStateMachine } from '../workflow/state-machine.js';
+import { parseMention, getHelpText } from '../utils/mention-parser.js';
 import type { WebhookIssueData, WebhookCommentData, WebhookReactionData, WebhookHandlers } from './server.js';
 
 const logger = createChildLogger({ module: 'webhook-handler' });
@@ -169,7 +170,7 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
 
 /**
  * Handle new comments from webhook
- * This is the key handler - when a human replies, we want to act quickly
+ * Only responds to @taskAgent mentions with specific commands
  */
 async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
   // Cache the comment data from webhook payload
@@ -193,35 +194,56 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
 
   const issueId = data.issueId;
 
-  logger.info(
-    { issueId, commentLength: data.body.length },
-    'Human comment detected via webhook'
-  );
+  // Parse for @taskAgent mention
+  const mention = parseMention(data.body);
 
-  // Clear any awaiting response state - we got new input!
-  queueScheduler.clearAwaitingResponse(issueId);
-
-  // Log if there's already an active task, but STILL enqueue
-  // The queue handles deduplication - silently skipping causes tickets to get stuck
-  if (linearQueue.hasAnyActiveTask(issueId)) {
-    logger.info({ issueId }, 'Active task exists for comment, but enqueueing anyway (queue will dedupe)');
+  if (!mention.found) {
+    logger.debug({ issueId, commentLength: data.body.length }, 'No @taskAgent mention, ignoring comment');
+    return;
   }
 
-  // ALWAYS re-evaluate when we get new human input
-  // The readiness scorer will see the new comment and score accordingly
-  // This is the source of truth for what to do next
+  logger.info(
+    { issueId, command: mention.command, rawText: mention.rawText },
+    'Detected @taskAgent mention'
+  );
+
   // Look up the ticket identifier from cache (it has the TAS-XX format)
   const cachedTicket = linearCache.getTicket(issueId);
   const ticketIdentifier = cachedTicket?.identifier || `ticket-${issueId}`;
 
+  // Handle help command (empty mention or unknown command)
+  if (mention.command === 'help') {
+    logger.info({ issueId, ticketIdentifier }, 'Responding with help text');
+    await linearClient.addComment(issueId, getHelpText());
+    return;
+  }
+
+  // Map mention commands to task types
+  const taskTypeMap = {
+    'clarify': 'refine',       // Uses TicketRefinerAgent
+    'rewrite': 'consolidate',  // Uses DescriptionConsolidatorAgent
+    'work': 'execute',         // Uses CodeExecutorAgent
+  } as const;
+
+  type CommandKey = keyof typeof taskTypeMap;
+  const taskType = taskTypeMap[mention.command as CommandKey];
+  if (!taskType) {
+    logger.warn({ issueId, command: mention.command }, 'Unknown command - this should not happen');
+    return;
+  }
+
+  // Clear any awaiting response state
+  queueScheduler.clearAwaitingResponse(issueId);
+
+  // Enqueue the task
   linearQueue.enqueue({
     ticketId: issueId,
     ticketIdentifier,
-    taskType: 'evaluate',
-    priority: 1, // Highest priority - human just provided new info!
+    taskType,
+    priority: 1, // User-triggered = highest priority
   });
 
-  logger.info({ issueId, ticketIdentifier }, 'Enqueued evaluation from webhook (new human comment)');
+  logger.info({ issueId, ticketIdentifier, command: mention.command, taskType }, 'Enqueued task from @taskAgent mention');
 }
 
 /**
@@ -283,8 +305,7 @@ async function handleCommentUpdate(data: WebhookCommentData): Promise<void> {
           logger.info({ issueId }, 'Active task exists, but enqueueing anyway (queue will dedupe)');
         }
 
-        // Enqueue evaluation - the readiness scorer will see the checked boxes
-        // and determine what to do next (more questions, approval, or ready)
+        // Enqueue refine task - continue the clarification flow with the new answers
         // Look up the ticket identifier from cache (it has the TAS-XX format)
         const cachedTicket = linearCache.getTicket(issueId);
         const ticketIdentifier = cachedTicket?.identifier || `ticket-${issueId}`;
@@ -292,11 +313,11 @@ async function handleCommentUpdate(data: WebhookCommentData): Promise<void> {
         linearQueue.enqueue({
           ticketId: issueId,
           ticketIdentifier,
-          taskType: 'evaluate',
+          taskType: 'refine',  // Continue clarification with checkbox answers
           priority: 1, // Highest priority - human just provided answers!
         });
 
-        logger.info({ issueId, ticketIdentifier }, 'Enqueued evaluation from checkbox update (after debounce)');
+        logger.info({ issueId, ticketIdentifier }, 'Enqueued refine from checkbox update (after debounce)');
       }, CHECKBOX_DEBOUNCE_MS);
 
       checkboxDebounceTimers.set(issueId, timer);
