@@ -30,14 +30,24 @@ import {
 const logger = createChildLogger({ module: 'workflow-engine' });
 
 const READINESS_THRESHOLD = 70;
-const TASK_AGENT_TAG = '[TaskAgent]';
-const TASK_AGENT_TAG_ESCAPED = '\\[TaskAgent\\]'; // Markdown-escaped version
-const APPROVAL_TAG = '[TaskAgent Proposal]';
-const WORKING_TAG = '[TaskAgent Working]';
 
-// Helper to check if a comment body contains TaskAgent tags (handles both escaped and unescaped)
-function hasTaskAgentTag(body: string): boolean {
-  return body.includes(TASK_AGENT_TAG) || body.includes(TASK_AGENT_TAG_ESCAPED);
+// Helper to check if a ticket's Linear state is 'backlog'
+function isBacklogState(ticket: TicketInfo): boolean {
+  const stateType = ticket.state.type?.toLowerCase();
+  const stateName = ticket.state.name?.toLowerCase();
+  return stateType === 'backlog' || stateName === 'backlog';
+}
+
+// Helper to check if a comment is from TaskAgent
+function isTaskAgentComment(user?: { id?: string; isMe?: boolean } | null): boolean {
+  // Primary: check user.isMe flag from API (most reliable)
+  if (user?.isMe) return true;
+  // Fallback: check user ID against cached bot ID
+  if (user?.id) {
+    const botUserId = linearClient.getCachedBotUserId();
+    if (botUserId && user.id === botUserId) return true;
+  }
+  return false;
 }
 
 // Track active agent sessions per ticket
@@ -86,6 +96,20 @@ export class WorkflowEngine {
       return `${linearClient.formatUserMention(lead)} `;
     }
     return '';
+  }
+
+  /**
+   * Transition ticket from backlog to Up Next if currently in backlog state.
+   * This surfaces ready tickets to the user before requesting approval.
+   */
+  private async transitionFromBacklogIfNeeded(ticket: TicketInfo): Promise<void> {
+    if (isBacklogState(ticket)) {
+      logger.info(
+        { ticketId: ticket.identifier, currentState: ticket.state.name },
+        'Transitioning ticket from backlog to Up Next'
+      );
+      await linearClient.setIssueUpNext(ticket.id);
+    }
   }
 
   async processTickets(tickets: TicketInfo[]): Promise<ProcessingResult[]> {
@@ -261,6 +285,8 @@ export class WorkflowEngine {
     if (readiness.score >= READINESS_THRESHOLD) {
       ticketStateMachine.transition(ticket.id, 'ready_for_approval', 'Score meets threshold', readiness);
       await this.syncLabel(ticket.id, 'ready_for_approval');
+      // Transition from backlog to Up Next before requesting approval
+      await this.transitionFromBacklogIfNeeded(ticket);
       await this.requestApproval(ticket, readiness);
       return this.createResult(ticket, previousState, 'ready_for_approval', 'approval-requested');
     }
@@ -307,7 +333,7 @@ export class WorkflowEngine {
         existingComments: comments.map((c) => ({
           body: c.body,
           createdAt: c.createdAt,
-          isFromTaskAgent: c.user?.isMe || hasTaskAgentTag(c.body),
+          isFromTaskAgent: isTaskAgentComment(c.user),
         })),
       },
     };
@@ -325,6 +351,8 @@ export class WorkflowEngine {
     if (refinement.action === 'ready') {
       ticketStateMachine.transition(ticket.id, 'ready_for_approval', 'Refiner marked ready');
       await this.syncLabel(ticket.id, 'ready_for_approval');
+      // Transition from backlog to Up Next before requesting approval
+      await this.transitionFromBacklogIfNeeded(ticket);
       await this.requestApproval(ticket, readiness);
       return this.createResult(ticket, previousState, 'ready_for_approval', 'ready-after-refinement');
     }
@@ -351,6 +379,8 @@ export class WorkflowEngine {
 
     ticketStateMachine.transition(ticket.id, 'ready_for_approval', 'No questions needed');
     await this.syncLabel(ticket.id, 'ready_for_approval');
+    // Transition from backlog to Up Next before requesting approval
+    await this.transitionFromBacklogIfNeeded(ticket);
     await this.requestApproval(ticket, readiness);
     return this.createResult(ticket, previousState, 'ready_for_approval', 'ready-no-questions');
   }
@@ -423,8 +453,6 @@ export class WorkflowEngine {
       });
     }
 
-    await linearClient.addComment(ticket.id, `${WORKING_TAG}\n\nStarting work on this ticket...`);
-
     return this.handleExecuting(ticket, 'generating_prompt');
   }
 
@@ -489,7 +517,7 @@ export class WorkflowEngine {
 
         await linearClient.addComment(
           ticket.id,
-          `${TASK_AGENT_TAG} Attempt ${retryCount + 1} failed: ${error}\n\nRetrying...`
+          `Attempt ${retryCount + 1} failed: ${error}\n\nRetrying...`
         );
         return this.createResult(ticket, previousState, 'executing', 'retrying');
       }
@@ -505,7 +533,7 @@ export class WorkflowEngine {
 
       await linearClient.addComment(
         ticket.id,
-        `${TASK_AGENT_TAG} Failed after ${retryCount + 1} attempts.\n\n**Error**: ${error}\n\nEscalating for human review.`
+        `Failed after ${retryCount + 1} attempts.\n\n**Error**: ${error}\n\nEscalating for human review.`
       );
       return this.createResult(ticket, previousState, 'failed', 'execution-failed');
     }
@@ -526,7 +554,7 @@ export class WorkflowEngine {
       agentSessions.delete(ticket.id);
     }
 
-    let comment = `${TASK_AGENT_TAG} Work completed successfully!`;
+    let comment = `Work completed successfully!`;
     if (result.data.prUrl) {
       comment += `\n\n**Pull Request**: ${result.data.prUrl}`;
     }
@@ -546,8 +574,7 @@ export class WorkflowEngine {
       if (!lastAgentComment) return null;
 
       const hasHumanResponse = comments.some(
-        (c) => !c.user?.isMe &&
-          !hasTaskAgentTag(c.body) &&
+        (c) => !isTaskAgentComment(c.user) &&
           c.createdAt > lastAgentComment.createdAt
       );
 
@@ -560,7 +587,7 @@ export class WorkflowEngine {
 
     if (state.currentState === 'ready_for_approval') {
       const approvalComment = comments.find(
-        (c) => c.body.includes(APPROVAL_TAG) && c.user?.isMe
+        (c) => isTaskAgentComment(c.user) && c.body.includes('React with 👍 to approve')
       );
 
       if (!approvalComment) return null;
@@ -585,7 +612,7 @@ export class WorkflowEngine {
 
   private findLastAgentComment(comments: TicketComment[]): TicketComment | undefined {
     return comments
-      .filter((c) => c.user?.isMe || hasTaskAgentTag(c.body))
+      .filter((c) => isTaskAgentComment(c.user))
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
   }
 
@@ -643,9 +670,7 @@ export class WorkflowEngine {
     readiness: ReadinessScorerOutput
   ): Promise<void> {
     const mentionPrefix = await this.formatLeadMention();
-    const commentBody = `${mentionPrefix}${APPROVAL_TAG}
-
-I'd like to start working on this ticket. Here's my analysis:
+    const commentBody = `${mentionPrefix}I'd like to start working on this ticket. Here's my analysis:
 
 **Readiness Score**: ${readiness.score}/100
 **Assessment**: ${readiness.reasoning}
@@ -655,7 +680,7 @@ ${readiness.issues.length > 0 ? `**Potential Issues**:\n${readiness.issues.map((
 ${readiness.suggestions.length > 0 ? `**Suggestions**:\n${readiness.suggestions.map((s) => `- ${s}`).join('\n')}` : ''}
 
 ---
-Reply with **"yes"** or **"approve"** to start, or **"no"** to skip this ticket.`;
+React with 👍 to approve or 👎 to skip.`;
 
     await linearClient.addComment(ticket.id, commentBody);
     logger.info({ ticketId: ticket.identifier }, 'Approval requested');

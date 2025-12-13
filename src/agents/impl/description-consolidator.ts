@@ -32,7 +32,13 @@ Checklist format (- [ ]) that defines "done". Each item should be testable.
 - Extract concrete requirements from checkbox answers (checked items = requirements)
 - Don't reference the Q&A discussion - write as if these requirements were always known
 - Be concise but complete - a developer should understand exactly what to build
-- If answers mentioned specific technologies, files, or approaches, include them`;
+- If answers mentioned specific technologies, files, or approaches, include them
+
+## Title Guidelines:
+- Only suggest a new title if the original is vague, unclear, or doesn't reflect the actual work
+- A good title is concise (5-10 words), describes the action, and mentions the key component
+- Examples: "Add dark mode toggle to settings page", "Fix login timeout on slow connections"
+- If the original title is already clear and specific, do NOT include suggestedTitle in your response`;
 
 const CONSOLIDATOR_SCHEMA = {
   type: 'object',
@@ -40,6 +46,10 @@ const CONSOLIDATOR_SCHEMA = {
     consolidatedDescription: {
       type: 'string',
       description: 'The improved, consolidated ticket description in Markdown format',
+    },
+    suggestedTitle: {
+      type: 'string',
+      description: 'An improved title for the ticket if the original is vague or unclear. Null if original is fine.',
     },
     summary: {
       type: 'string',
@@ -62,6 +72,7 @@ export const DescriptionConsolidatorInputSchema = z.object({
 
 export const DescriptionConsolidatorOutputSchema = z.object({
   consolidatedDescription: z.string(),
+  suggestedTitle: z.string().optional(),
   summary: z.string(),
 });
 

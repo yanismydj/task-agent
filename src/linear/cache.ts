@@ -281,6 +281,84 @@ export class LinearCache {
   }
 
   /**
+   * Get a single workflow state by ID
+   */
+  getWorkflowState(stateId: string): { id: string; name: string; type: string } | null {
+    const db = getDatabase();
+    const stmt = db.prepare(`
+      SELECT id, name, type FROM linear_workflow_states_cache
+      WHERE id = ?
+    `);
+    const row = stmt.get(stateId) as { id: string; name: string; type: string } | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * Cache labels for a team
+   */
+  cacheLabels(teamId: string, labels: Array<{ id: string; name: string }>): void {
+    const db = getDatabase();
+    const transaction = db.transaction(() => {
+      // Clear old labels for this team
+      db.prepare('DELETE FROM linear_labels_cache WHERE team_id = ?').run(teamId);
+
+      // Insert new labels
+      const stmt = db.prepare(`
+        INSERT INTO linear_labels_cache (id, name, team_id, cached_at)
+        VALUES (?, ?, ?, datetime('now'))
+      `);
+
+      for (const label of labels) {
+        stmt.run(label.id, label.name, teamId);
+      }
+    });
+    transaction();
+    logger.info({ teamId, count: labels.length }, 'Cached labels');
+  }
+
+  /**
+   * Get a label name by ID
+   */
+  getLabelName(labelId: string): string | null {
+    const db = getDatabase();
+    const stmt = db.prepare('SELECT name FROM linear_labels_cache WHERE id = ?');
+    const row = stmt.get(labelId) as { name: string } | undefined;
+    return row?.name ?? null;
+  }
+
+  /**
+   * Get multiple label names by IDs
+   * Returns a map of id -> name
+   */
+  getLabelNames(labelIds: string[]): Map<string, string> {
+    if (labelIds.length === 0) return new Map();
+
+    const db = getDatabase();
+    const placeholders = labelIds.map(() => '?').join(',');
+    const stmt = db.prepare(`SELECT id, name FROM linear_labels_cache WHERE id IN (${placeholders})`);
+    const rows = stmt.all(...labelIds) as Array<{ id: string; name: string }>;
+
+    const result = new Map<string, string>();
+    for (const row of rows) {
+      result.set(row.id, row.name);
+    }
+    return result;
+  }
+
+  /**
+   * Check if labels are cached for a team
+   */
+  hasLabels(teamId: string): boolean {
+    const db = getDatabase();
+    const stmt = db.prepare(`
+      SELECT COUNT(*) as count FROM linear_labels_cache
+      WHERE team_id = ?
+    `);
+    const row = stmt.get(teamId) as { count: number };
+    return row.count > 0;
+  }
+
+  /**
    * Clear all cached data
    */
   clearAll(): void {
@@ -288,6 +366,7 @@ export class LinearCache {
     db.exec('DELETE FROM linear_comments_cache');
     db.exec('DELETE FROM linear_tickets_cache');
     db.exec('DELETE FROM linear_workflow_states_cache');
+    db.exec('DELETE FROM linear_labels_cache');
     logger.info('Cleared all Linear cache');
   }
 

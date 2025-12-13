@@ -12,12 +12,12 @@ import {
 
 const READINESS_SYSTEM_PROMPT = `You are evaluating a Linear ticket to determine if it's ready for a coding agent to work on.
 
-SCORING GUIDELINES - Be generous! Most tickets with clear intent should score 60+:
+SCORING GUIDELINES - Be generous! Most tickets with clear intent should score 70+:
 - 80-100: Clear task with good context, ready to execute immediately
 - 70-79: Task is clear enough to start, minor details can be figured out
 - 50-69: Needs some clarification but has a clear goal
-- 30-49: Too vague or missing important information
-- 0-29: Completely unclear or blocked by external factors
+- 30-49: Too vague or missing important information - NEEDS REFINEMENT
+- 0-29: Very unclear - STILL NEEDS REFINEMENT (not blocked)
 
 Evaluate based on:
 1. **Clear Goal**: Is it clear what needs to be done? (Most important)
@@ -38,9 +38,11 @@ If a user has answered TaskAgent's questions, those answers ARE the acceptance c
 
 Recommend one of these actions:
 - "execute": Ready to start work (score >= 70) - USE THIS if the task is reasonably clear
-- "refine": Needs clarification (score 40-69)
-- "block": External dependencies prevent work (use sparingly)
-- "skip": Completely out of scope
+- "refine": Needs clarification (score < 70) - USE THIS for vague or unclear tickets
+- "block": TRUE EXTERNAL BLOCKERS ONLY (e.g., "waiting for API credentials", "needs design review first", "depends on PR #123"). DO NOT use block for vague tickets - use refine instead!
+- "skip": Completely out of scope (not a coding task)
+
+IMPORTANT: Most tickets that aren't ready should use "refine", NOT "block". Block is ONLY for external dependencies that prevent ANY work, not for unclear requirements.
 
 Return your assessment as a JSON object.`;
 
@@ -195,11 +197,52 @@ ${description || '(no description)'}`;
       recommendedAction = 'refine';
     }
 
+    // Override "block" to "refine" unless there are true external blockers
+    // True blockers are things like: waiting for credentials, depends on another PR, needs design approval
+    if (recommendedAction === 'block') {
+      const hasExternalBlocker = this.hasExternalBlocker(result);
+      if (!hasExternalBlocker) {
+        recommendedAction = 'refine';
+      }
+    }
+
     return {
       ...result,
       ready: result.score >= 70,
       recommendedAction,
     };
+  }
+
+  /**
+   * Check if the issues or reasoning mention true external blockers
+   * (not just vague requirements)
+   */
+  private hasExternalBlocker(result: ReadinessScorerOutput): boolean {
+    const blockerKeywords = [
+      'credentials',
+      'api key',
+      'api-key',
+      'secret',
+      'access token',
+      'depends on pr',
+      'depends on #',
+      'waiting for',
+      'blocked by',
+      'needs approval',
+      'design review',
+      'design approval',
+      'external service',
+      'third party',
+      'not deployed',
+      'infrastructure',
+    ];
+
+    const textToCheck = [
+      result.reasoning.toLowerCase(),
+      ...result.issues.map((i) => i.toLowerCase()),
+    ].join(' ');
+
+    return blockerKeywords.some((keyword) => textToCheck.includes(keyword));
   }
 
   private priorityToString(priority: number): string {

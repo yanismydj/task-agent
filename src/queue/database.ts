@@ -6,7 +6,7 @@ const logger = createChildLogger({ module: 'queue-database' });
 
 let db: Database.Database | null = null;
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 const MIGRATIONS: Record<number, string[]> = {
   1: [
@@ -258,6 +258,22 @@ const MIGRATIONS: Record<number, string[]> = {
      ON pending_description_approvals(status, created_at)`,
 
     `INSERT OR REPLACE INTO schema_version (version) VALUES (5)`,
+  ],
+
+  // Migration 6: Add labels cache table
+  // Cache label id -> name mappings to avoid extra API calls when mapping issues
+  6: [
+    `CREATE TABLE IF NOT EXISTS linear_labels_cache (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      team_id TEXT NOT NULL,
+      cached_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
+
+    `CREATE INDEX IF NOT EXISTS idx_labels_cache_team
+     ON linear_labels_cache(team_id)`,
+
+    `INSERT OR REPLACE INTO schema_version (version) VALUES (6)`,
   ],
 };
 

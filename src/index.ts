@@ -21,7 +21,12 @@ async function checkOAuthAuthorization(): Promise<void> {
 
   const auth = getAuth();
 
-  if (!auth.hasValidToken()) {
+  // Try to get a valid token - this will attempt refresh if token is expired
+  try {
+    await auth.getAccessToken();
+    // Token is valid (either cached or refreshed)
+  } catch {
+    // Token invalid and refresh failed - need full re-authorization
     console.log('\n⚠️  Linear OAuth authorization required.\n');
     console.log('Starting authorization flow...\n');
     await auth.authorize();
@@ -66,8 +71,10 @@ async function main() {
   // Initialize and register daemon in Linear
   await stateManager.registerDaemon();
 
-  // Pre-cache workflow states to avoid API calls later
+  // Pre-cache workflow states, labels, and bot user ID to avoid API calls later
   await linearClient.cacheWorkflowStatesAtStartup();
+  await linearClient.cacheLabelsAtStartup();
+  await linearClient.getBotUserId();
 
   logger.info(
     {
@@ -97,9 +104,16 @@ async function main() {
     );
   }, 60000);
 
+  // Set up periodic health check every 5 minutes to recover stuck tasks
+  // Tasks stuck in 'processing' for > 10 minutes are reset to 'pending'
+  const healthCheckInterval = setInterval(() => {
+    queueManager.resetStuckProcessingTasks(10); // 10 minute threshold
+  }, 5 * 60 * 1000); // Every 5 minutes
+
   async function shutdown(): Promise<void> {
     logger.info('Shutting down...');
     clearInterval(heartbeatInterval);
+    clearInterval(healthCheckInterval);
 
     // Stop webhook server
     if (config.webhook.enabled) {

@@ -11,6 +11,7 @@ import { config } from '../config.js';
 import { createChildLogger } from '../utils/logger.js';
 import { initializeAuth, getAuth } from './auth.js';
 import { linearCache } from './cache.js';
+import { getDatabase } from '../queue/database.js';
 import type { TicketInfo, TicketComment, TicketUpdate, ProjectLead, CommentInfo } from './types.js';
 
 const logger = createChildLogger({ module: 'linear-client' });
@@ -72,6 +73,9 @@ export class LinearApiClient {
   private estimatedComplexityUsed = 0;
   private complexityTrackingStartTime = Date.now();
 
+  // Cache the bot's user ID for identifying our own comments
+  private botUserId: string | null = null;
+
   constructor() {
     this.teamId = config.linear.teamId;
     this.projectId = config.linear.projectId;
@@ -101,6 +105,29 @@ export class LinearApiClient {
     const accessToken = await auth.getAccessToken();
     this.client = new LinearClient({ accessToken });
     return this.client;
+  }
+
+  /**
+   * Get the bot's user ID (fetches and caches on first call)
+   */
+  async getBotUserId(): Promise<string> {
+    if (this.botUserId) {
+      return this.botUserId;
+    }
+
+    const client = await this.getClient();
+    const me = await client.viewer;
+    this.botUserId = me.id;
+    logger.info({ botUserId: this.botUserId }, 'Cached bot user ID');
+    return this.botUserId;
+  }
+
+  /**
+   * Get the bot's user ID if already cached (synchronous)
+   * Returns null if not yet fetched
+   */
+  getCachedBotUserId(): string | null {
+    return this.botUserId;
   }
 
   /**
@@ -492,11 +519,11 @@ export class LinearApiClient {
           after: cursor,
         });
 
-        const tickets: TicketInfo[] = [];
-        for (const issue of issues.nodes) {
-          const ticket = await this.mapIssueToTicket(issue);
-          tickets.push(ticket);
-        }
+        // Use fast mapper - no extra API calls per issue!
+        // Requires workflow states and labels to be cached at startup
+        const tickets: TicketInfo[] = issues.nodes.map((issue) =>
+          this.mapIssueToTicketFast(issue)
+        );
 
         return {
           tickets,
@@ -689,6 +716,17 @@ export class LinearApiClient {
       await client.updateIssue(issueId, { description });
     });
     logger.info({ issueId }, 'Updated ticket description');
+  }
+
+  /**
+   * Update the ticket title
+   */
+  async updateTitle(issueId: string, title: string): Promise<void> {
+    logger.debug({ issueId, titleLength: title.length }, 'Updating ticket title');
+    await this.withRetry(async (client) => {
+      await client.updateIssue(issueId, { title });
+    });
+    logger.info({ issueId }, 'Updated ticket title');
   }
 
   /**
@@ -894,6 +932,87 @@ export class LinearApiClient {
   }
 
   /**
+   * Get team labels (cached)
+   * Fetches from cache if available, otherwise from API
+   */
+  async getLabels(): Promise<Array<{ id: string; name: string }>> {
+    // Check cache first
+    if (linearCache.hasLabels(this.teamId)) {
+      const db = getDatabase();
+      const stmt = db.prepare('SELECT id, name FROM linear_labels_cache WHERE team_id = ?');
+      const rows = stmt.all(this.teamId) as Array<{ id: string; name: string }>;
+      logger.debug({ teamId: this.teamId, count: rows.length }, 'Using cached labels');
+      return rows;
+    }
+
+    // Cache miss - fetch from API and cache
+    return this.withRetry(async (client) => {
+      const team = await client.team(this.teamId);
+      const labels = await team.labels();
+      const result = labels.nodes.map((l) => ({
+        id: l.id,
+        name: l.name,
+      }));
+
+      // Cache the labels
+      linearCache.cacheLabels(this.teamId, result);
+
+      return result;
+    });
+  }
+
+  /**
+   * Pre-cache labels at startup
+   * Call this once during initialization to avoid API calls later
+   */
+  async cacheLabelsAtStartup(): Promise<void> {
+    try {
+      await this.getLabels();
+      logger.info({ teamId: this.teamId }, 'Labels cached at startup');
+    } catch (error) {
+      logger.warn({ error }, 'Failed to cache labels at startup');
+    }
+  }
+
+  /**
+   * Set issue state to "Up Next" (or equivalent unstarted/triaged state)
+   * Used to transition tickets from backlog to ready-for-work state
+   */
+  async setIssueUpNext(issueId: string): Promise<void> {
+    await this.withRetry(async (client) => {
+      const team = await client.team(this.teamId);
+      const states = await team.states();
+
+      // Find "Up Next" or "Todo" state - type 'unstarted' but not 'backlog'
+      // Linear has two unstarted types: backlog and regular unstarted (e.g., "Todo", "Up Next")
+      const upNextState = states.nodes.find(
+        (s) =>
+          s.type === 'unstarted' &&
+          (s.name.toLowerCase() === 'up next' ||
+            s.name.toLowerCase() === 'todo' ||
+            s.name.toLowerCase() === 'to do' ||
+            s.name.toLowerCase() === 'ready')
+      );
+
+      if (upNextState) {
+        await client.updateIssue(issueId, { stateId: upNextState.id });
+        logger.info({ issueId, stateName: upNextState.name }, 'Set issue to Up Next');
+      } else {
+        // Fallback: find any unstarted state that isn't backlog
+        const anyUnstarted = states.nodes.find(
+          (s) => s.type === 'unstarted' && s.name.toLowerCase() !== 'backlog'
+        );
+        if (anyUnstarted) {
+          await client.updateIssue(issueId, { stateId: anyUnstarted.id });
+          logger.info({ issueId, stateName: anyUnstarted.name }, 'Set issue to unstarted state');
+        } else {
+          logger.warn({ issueId }, 'No "Up Next" or unstarted state found for team');
+        }
+      }
+    });
+  }
+
+  /**
    * Set issue state to "In Progress" (or equivalent started state)
    */
   async setIssueInProgress(issueId: string): Promise<void> {
@@ -1062,6 +1181,63 @@ export class LinearApiClient {
     }
   }
 
+  /**
+   * Map an Issue to TicketInfo using cached data for state and labels.
+   * This avoids extra API calls by using:
+   * - issue.stateId + cached workflow states
+   * - issue.labelIds + cached label names
+   * - issue.assigneeId (we only need to know if assigned, not the name)
+   */
+  private mapIssueToTicketFast(issue: Issue): TicketInfo {
+    // Get state from cache using stateId (no API call!)
+    const stateId = (issue as unknown as { stateId?: string }).stateId;
+    let state: { id: string; name: string; type: string } = { id: '', name: 'Unknown', type: 'unstarted' };
+    if (stateId) {
+      const cachedState = linearCache.getWorkflowState(stateId);
+      if (cachedState) {
+        state = cachedState;
+      } else {
+        // Fallback - state not in cache, use ID only
+        state = { id: stateId, name: 'Unknown', type: 'unstarted' };
+      }
+    }
+
+    // Get assignee info - we only need ID to know if assigned
+    const assigneeId = (issue as unknown as { assigneeId?: string }).assigneeId;
+
+    // Get labels from cache using labelIds (no API call!)
+    const labelIds = issue.labelIds || [];
+    const labelNameMap = linearCache.getLabelNames(labelIds);
+    const labels = labelIds.map((id) => ({
+      id,
+      name: labelNameMap.get(id) || 'Unknown',
+    }));
+
+    return {
+      id: issue.id,
+      identifier: issue.identifier,
+      title: issue.title,
+      description: issue.description ?? null,
+      priority: issue.priority,
+      state,
+      assignee: assigneeId
+        ? {
+            id: assigneeId,
+            name: '', // We don't need the name, just that it's assigned
+          }
+        : null,
+      labels,
+      createdAt: issue.createdAt,
+      updatedAt: issue.updatedAt,
+      url: issue.url,
+    };
+  }
+
+  /**
+   * Map an Issue to TicketInfo with full API fetches (slow, but complete data)
+   * Use mapIssueToTicketFast for batch operations
+   * @deprecated Use mapIssueToTicketFast for better performance
+   */
   private async mapIssueToTicket(issue: Issue): Promise<TicketInfo> {
     const state = await issue.state;
     const assignee = await issue.assignee;

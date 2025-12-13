@@ -9,6 +9,10 @@ import {
   type TicketRefinerOutput,
 } from '../core/index.js';
 
+// Minimum readiness score required to mark a ticket as "ready" for approval
+// Below this threshold, we MUST ask clarifying questions
+const READY_THRESHOLD = 70;
+
 const REFINER_SYSTEM_PROMPT = `You are a technical project manager helping prepare tickets for coding agents.
 
 Your goal is to ask clarifying questions that will help a coding agent successfully implement the ticket.
@@ -36,8 +40,12 @@ Guidelines:
 - Only ask open-ended questions when options aren't feasible
 - Prioritize: 'critical' (blocking), 'important' (should clarify), 'nice_to_have'
 
-If the ticket is already well-specified, recommend action 'ready'.
-If there are external blockers, recommend action 'blocked'.`;
+**CRITICAL SCORE RULE**: If the readiness score is below 70, you MUST ask clarifying questions.
+Only recommend action 'ready' if:
+1. The readiness score is 70 or above, AND
+2. The ticket is truly well-specified with clear acceptance criteria
+
+If there are external blockers (dependencies, access needed, etc.), recommend action 'blocked'.`;
 
 const REFINER_SCHEMA = {
   type: 'object',
@@ -124,6 +132,37 @@ export class TicketRefinerAgent extends BaseAgent<TicketRefinerInput, TicketRefi
 
       // Filter out questions that have already been answered
       const filteredResult = this.filterAnsweredQuestions(result, input.data.existingComments);
+
+      // Check if readiness score is below threshold
+      const readinessScore = input.data.readinessResult.score;
+      if (readinessScore < READY_THRESHOLD && filteredResult.action === 'ready') {
+        // Refiner says ready but score is low - only override if we have actual questions to ask
+        // If refiner has no questions, trust its judgment and proceed to approval
+        // (The human can reject if they disagree)
+        if (filteredResult.questions.length > 0) {
+          logger.info(
+            {
+              ticketId: input.ticketIdentifier,
+              score: readinessScore,
+              threshold: READY_THRESHOLD,
+              questionCount: filteredResult.questions.length,
+            },
+            'Overriding ready→ask_questions due to low readiness score (has questions to ask)'
+          );
+          filteredResult.action = 'ask_questions';
+        } else {
+          // No questions to ask - proceed to approval despite low score
+          // The refiner couldn't identify any gaps, so let human decide
+          logger.info(
+            {
+              ticketId: input.ticketIdentifier,
+              score: readinessScore,
+              threshold: READY_THRESHOLD,
+            },
+            'Low readiness score but refiner found no questions - proceeding to approval'
+          );
+        }
+      }
 
       logger.info(
         {
@@ -232,13 +271,14 @@ Focus on remaining gaps and unanswered questions.`;
       return true;
     });
 
+    // NOTE: We intentionally do NOT auto-transition to 'ready' here anymore.
+    // The score threshold check in execute() handles enforcing the READY_THRESHOLD.
+    // If all questions were filtered but score is low, execute() will add a default question.
     return {
       ...result,
       questions: filteredQuestions,
-      // If all questions were filtered, mark as ready
-      action: filteredQuestions.length === 0 && result.action === 'ask_questions'
-        ? 'ready'
-        : result.action,
+      // Keep the original action - score enforcement happens in execute()
+      // This prevents auto-transitioning to 'ready' when score is below threshold
     };
   }
 
@@ -255,7 +295,7 @@ Focus on remaining gaps and unanswered questions.`;
     const mention = mentionPrefix || '';
 
     if (output.action === 'blocked') {
-      return [`${mention}**[TaskAgent]** ⚠️ Blocked: ${output.blockerReason || 'Unknown blocker'}`];
+      return [`${mention}⚠️ Blocked: ${output.blockerReason || 'Unknown blocker'}`];
     }
 
     const comments: string[] = [];
@@ -275,14 +315,14 @@ Focus on remaining gaps and unanswered questions.`;
       if (q.options && q.options.length > 0) {
         // Multiple choice question with checkboxes
         const selectHint = q.allowMultiple ? '(select all that apply)' : '(select one)';
-        let comment = `${mention}**[TaskAgent]** ${priorityLabel} ${q.question} ${selectHint}\n`;
+        let comment = `${mention}${priorityLabel} ${q.question} ${selectHint}\n`;
         for (const option of q.options) {
           comment += `- [ ] ${option}\n`;
         }
         comments.push(comment.trim());
       } else {
         // Open-ended question
-        comments.push(`${mention}**[TaskAgent]** ${priorityLabel} ${q.question}`);
+        comments.push(`${mention}${priorityLabel} ${q.question}`);
       }
     }
 

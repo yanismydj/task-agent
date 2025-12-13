@@ -5,17 +5,25 @@ import { config } from '../config.js';
 import { linearCache } from '../linear/cache.js';
 import { descriptionApprovalManager } from '../queue/description-approvals.js';
 import { linearClient } from '../linear/client.js';
+import { ticketStateMachine } from '../workflow/state-machine.js';
 import type { WebhookIssueData, WebhookCommentData, WebhookReactionData, WebhookHandlers } from './server.js';
 
 const logger = createChildLogger({ module: 'webhook-handler' });
+
+// Helper to check if a comment is from TaskAgent (using user ID)
+function isCommentFromTaskAgent(userId?: string): boolean {
+  if (!userId) return false;
+  const botUserId = linearClient.getCachedBotUserId();
+  return botUserId !== null && userId === botUserId;
+}
 
 // Linear retries webhooks after 5 seconds, so we must respond within that time
 // Using 4 seconds gives us a 1 second buffer
 const WEBHOOK_TIMEOUT_MS = 4000;
 
 // Debounce delay for checkbox changes - wait this long after the last checkbox change
-// before triggering re-evaluation. This gives users time to answer all questions.
-const CHECKBOX_DEBOUNCE_MS = 60 * 1000; // 60 seconds
+// before triggering re-evaluation. This gives users time to answer multiple questions.
+const CHECKBOX_DEBOUNCE_MS = 5 * 1000; // 5 seconds
 
 // Track pending checkbox debounce timers per ticket
 const checkboxDebounceTimers = new Map<string, NodeJS.Timeout>();
@@ -85,6 +93,26 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
     url: '',
   });
 
+  // Check for manual unblocking: if ticket was internally blocked but ta:blocked label was removed
+  const internalState = ticketStateMachine.getState(data.id);
+  const wasBlocked = internalState?.currentState === 'blocked';
+  const hasBlockedLabel = data.labels?.some((l) => l.name === 'ta:blocked');
+
+  if (wasBlocked && !hasBlockedLabel) {
+    logger.info(
+      { issueId: data.identifier },
+      'Blocked ticket label removed - unblocking and re-evaluating'
+    );
+    ticketStateMachine.transition(data.id, 'new', 'Manually unblocked via label removal');
+    linearQueue.enqueue({
+      ticketId: data.id,
+      ticketIdentifier: data.identifier,
+      taskType: 'evaluate',
+      priority: 2, // High priority - user took action
+    });
+    return;
+  }
+
   // Skip if issue is assigned (manual work)
   if (data.assignee) {
     logger.debug({ issueId: data.identifier }, 'Ignoring assigned issue');
@@ -99,16 +127,16 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
   }
 
   // Check if we already have an active task for this ticket
+  // Note: We still check hasAnyActiveTask to avoid duplicate processing of the same webhook
+  // But we removed wasRecentlyProcessed - that was blocking legitimate re-evaluations
   if (linearQueue.hasAnyActiveTask(data.id)) {
     logger.debug({ issueId: data.identifier }, 'Already have active task for this issue');
     return;
   }
 
-  // Check if recently processed
-  if (linearQueue.wasRecentlyProcessed(data.id, 5)) {
-    logger.debug({ issueId: data.identifier }, 'Recently processed, skipping');
-    return;
-  }
+  // NOTE: We intentionally do NOT check wasRecentlyProcessed here anymore.
+  // The 5-minute blocking window was preventing legitimate re-evaluations after Q&A.
+  // The scheduler still uses it to prevent polling duplicates.
 
   // Check for TaskAgent labels to determine if we should process
   const hasTaskAgentLabel = data.labels?.some(
@@ -157,9 +185,8 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
     updatedAt: new Date(data.updatedAt),
   });
 
-  // Ignore comments from TaskAgent itself
-  // Note: Webhooks don't have isMe flag, so we rely on checking for TaskAgent tags
-  if (data.body.includes('[TaskAgent]') || data.body.includes('[TaskAgent Proposal]') || data.body.includes('[TaskAgent Working]')) {
+  // Ignore comments from TaskAgent itself (check user ID)
+  if (isCommentFromTaskAgent(data.user?.id)) {
     logger.debug({ commentId: data.id }, 'Ignoring TaskAgent comment');
     return;
   }
@@ -171,46 +198,30 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
     'Human comment detected via webhook'
   );
 
-  // Check if we already have any active task for this ticket
+  // Clear any awaiting response state - we got new input!
+  queueScheduler.clearAwaitingResponse(issueId);
+
+  // Log if there's already an active task, but STILL enqueue
+  // The queue handles deduplication - silently skipping causes tickets to get stuck
   if (linearQueue.hasAnyActiveTask(issueId)) {
-    logger.debug({ issueId }, 'Already have active task for this ticket');
-    return;
+    logger.info({ issueId }, 'Active task exists for comment, but enqueueing anyway (queue will dedupe)');
   }
 
-  // Check if the ticket is awaiting a response from TaskAgent
-  // Only enqueue check_response if we're actually waiting for something
-  const isAwaitingResponse = queueScheduler.isAwaitingResponse(issueId);
+  // ALWAYS re-evaluate when we get new human input
+  // The readiness scorer will see the new comment and score accordingly
+  // This is the source of truth for what to do next
+  // Look up the ticket identifier from cache (it has the TAS-XX format)
+  const cachedTicket = linearCache.getTicket(issueId);
+  const ticketIdentifier = cachedTicket?.identifier || `ticket-${issueId}`;
 
-  if (isAwaitingResponse) {
-    // Clear from awaiting response - we got a response!
-    const waitingFor = queueScheduler.getAwaitingResponseType(issueId);
-    queueScheduler.clearAwaitingResponse(issueId);
+  linearQueue.enqueue({
+    ticketId: issueId,
+    ticketIdentifier,
+    taskType: 'evaluate',
+    priority: 1, // Highest priority - human just provided new info!
+  });
 
-    // Enqueue immediate response check with high priority
-    linearQueue.enqueue({
-      ticketId: issueId,
-      ticketIdentifier: `webhook-${issueId}`, // We don't have the identifier, will be fetched
-      taskType: 'check_response',
-      priority: 1, // Urgent - human just responded!
-      inputData: {
-        waitingFor: waitingFor || 'questions',
-        triggeredByWebhook: true,
-      },
-    });
-
-    logger.info({ issueId, waitingFor }, 'Enqueued response check from webhook');
-  } else {
-    // Not awaiting response - this is a new comment on a ticket
-    // Enqueue for evaluation to see if the ticket needs work
-    linearQueue.enqueue({
-      ticketId: issueId,
-      ticketIdentifier: `webhook-${issueId}`,
-      taskType: 'evaluate',
-      priority: 2, // High priority - human just commented
-    });
-
-    logger.info({ issueId }, 'Enqueued evaluation from webhook (new comment)');
-  }
+  logger.info({ issueId, ticketIdentifier }, 'Enqueued evaluation from webhook (new human comment)');
 }
 
 /**
@@ -233,12 +244,7 @@ async function handleCommentUpdate(data: WebhookCommentData): Promise<void> {
 
   // Check if this is a TaskAgent question comment with checked boxes
   // When users check checkboxes, the comment body is updated with [X] or [x]
-  const isTaskAgentComment = data.body.includes('[TaskAgent]') ||
-                             data.body.includes('\\[TaskAgent\\]') ||
-                             data.body.includes('[TaskAgent Proposal]') ||
-                             data.body.includes('[TaskAgent Working]');
-
-  if (isTaskAgentComment) {
+  if (isCommentFromTaskAgent(data.user?.id)) {
     // Check if there are checked boxes (user responded via checkbox)
     const hasCheckedBoxes = data.body.includes('[X]') || data.body.includes('[x]');
 
@@ -247,7 +253,7 @@ async function handleCommentUpdate(data: WebhookCommentData): Promise<void> {
 
       logger.info(
         { issueId, commentId: data.id },
-        'User checked checkbox in TaskAgent question - debouncing before processing'
+        'User checked checkbox in TaskAgent question - debouncing before re-evaluation'
       );
 
       // Record this checkbox change
@@ -261,27 +267,36 @@ async function handleCommentUpdate(data: WebhookCommentData): Promise<void> {
       }
 
       // Set a new debounce timer - only trigger after user stops checking boxes
+      // This gives users time to answer multiple questions before we re-evaluate
       const timer = setTimeout(() => {
         checkboxDebounceTimers.delete(issueId);
 
-        logger.info({ issueId }, 'Checkbox debounce timer fired - checking for response');
+        logger.info({ issueId }, 'Checkbox debounce timer fired - triggering re-evaluation');
 
-        // Check if we already have a response check queued
-        if (linearQueue.hasActiveTask(issueId, 'check_response')) {
-          logger.debug({ issueId }, 'Already have response check queued');
-          return;
+        // Clear awaiting response state
+        queueScheduler.clearAwaitingResponse(issueId);
+
+        // Log if there's already an active task, but STILL enqueue
+        // The queue's enqueue() method handles deduplication - it won't create duplicates
+        // We must not silently skip here as that causes tickets to get stuck
+        if (linearQueue.hasAnyActiveTask(issueId)) {
+          logger.info({ issueId }, 'Active task exists, but enqueueing anyway (queue will dedupe)');
         }
 
-        // Enqueue response check
+        // Enqueue evaluation - the readiness scorer will see the checked boxes
+        // and determine what to do next (more questions, approval, or ready)
+        // Look up the ticket identifier from cache (it has the TAS-XX format)
+        const cachedTicket = linearCache.getTicket(issueId);
+        const ticketIdentifier = cachedTicket?.identifier || `ticket-${issueId}`;
+
         linearQueue.enqueue({
           ticketId: issueId,
-          ticketIdentifier: `webhook-${issueId}`,
-          taskType: 'check_response',
-          priority: 1, // High priority for human responses
-          inputData: { waitingFor: 'questions' },
+          ticketIdentifier,
+          taskType: 'evaluate',
+          priority: 1, // Highest priority - human just provided answers!
         });
 
-        logger.info({ issueId }, 'Enqueued response check from checkbox update (after debounce)');
+        logger.info({ issueId, ticketIdentifier }, 'Enqueued evaluation from checkbox update (after debounce)');
       }, CHECKBOX_DEBOUNCE_MS);
 
       checkboxDebounceTimers.set(issueId, timer);
@@ -362,7 +377,7 @@ async function handleReactionCreate(data: WebhookReactionData): Promise<void> {
         // Add a confirmation comment
         await linearClient.addComment(
           descriptionApproval.ticketId,
-          '[TaskAgent] ✅ Description has been updated based on your approval.'
+          '✅ Description has been updated based on your approval.'
         );
 
         // Clear the awaiting-description-approval label
@@ -392,7 +407,7 @@ async function handleReactionCreate(data: WebhookReactionData): Promise<void> {
       // Add a confirmation comment
       await linearClient.addComment(
         descriptionApproval.ticketId,
-        '[TaskAgent] ❌ Description update rejected. Keeping the original description.'
+        '❌ Description update rejected. Keeping the original description.'
       );
 
       // Clear the awaiting-description-approval label
@@ -410,25 +425,32 @@ async function handleReactionCreate(data: WebhookReactionData): Promise<void> {
 
   const issueId = data.issueId;
 
-  // Check if we already have a response check queued
-  if (linearQueue.hasActiveTask(issueId, 'check_response')) {
-    logger.debug({ issueId }, 'Already have response check queued');
-    return;
+  // Clear awaiting response state
+  queueScheduler.clearAwaitingResponse(issueId);
+
+  // Log if there's already an active task, but STILL enqueue
+  // The queue handles deduplication - silently skipping causes tickets to get stuck
+  if (linearQueue.hasAnyActiveTask(issueId)) {
+    logger.info({ issueId }, 'Active task exists for reaction, but enqueueing anyway (queue will dedupe)');
   }
 
-  // Enqueue response check with the emoji reaction info
+  // Re-evaluate - the evaluation will see the approval state and proceed accordingly
+  // Pass the emoji reaction info so we can handle approval vs rejection
+  // Look up the ticket identifier from cache (it has the TAS-XX format)
+  const cachedTicket = linearCache.getTicket(issueId);
+  const ticketIdentifier = cachedTicket?.identifier || `ticket-${issueId}`;
+
   linearQueue.enqueue({
     ticketId: issueId,
-    ticketIdentifier: `webhook-${issueId}`,
-    taskType: 'check_response',
-    priority: 1, // High priority for human responses
+    ticketIdentifier,
+    taskType: 'evaluate',
+    priority: 1, // Highest priority - human just approved/rejected!
     inputData: {
-      waitingFor: 'approval',
       emojiReaction: isApproval ? 'approved' : 'rejected',
     },
   });
 
-  logger.info({ issueId, emoji }, 'Enqueued response check from emoji reaction');
+  logger.info({ issueId, ticketIdentifier, emoji, action: isApproval ? 'approved' : 'rejected' }, 'Enqueued evaluation from emoji reaction');
 }
 
 /**

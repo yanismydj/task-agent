@@ -30,6 +30,8 @@ logs/
 .task-agent-queue.db
 .task-agent-queue.db-wal
 .task-agent-queue.db-shm
+.task-agent.db
+.task-agent-repo-summary.json
 
 # Beads issue tracking (local only)
 .beads/

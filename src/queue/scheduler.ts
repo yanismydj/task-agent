@@ -1,5 +1,6 @@
 import { createChildLogger } from '../utils/logger.js';
 import { linearClient, RateLimitError } from '../linear/client.js';
+import { linearCache } from '../linear/cache.js';
 import { linearQueue } from './linear-queue.js';
 import { claudeQueue } from './claude-queue.js';
 import type { TicketInfo } from '../linear/types.js';
@@ -17,37 +18,32 @@ function mapPriority(linearPriority: number): Priority {
   return 3; // Default to medium
 }
 
-// Default intervals - faster for development, adjust in production
-const DEFAULT_POLL_INTERVAL_MS = 60 * 1000; // 1 minute between full polls
-const DEFAULT_RESPONSE_CHECK_INTERVAL_MS = 30 * 1000; // 30 seconds for response checks
+// Default intervals - optimized for webhook-driven workflow
+const DEFAULT_POLL_INTERVAL_MS = 5 * 1000; // 5 seconds - check LOCAL cache for new work
+const DEFAULT_FULL_SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes - full sync with Linear API
 
 /**
  * QueueScheduler manages the flow of work from Linear.
  *
- * Design Philosophy:
- * - Slow and steady: We prioritize thoroughness over speed
+ * Design Philosophy (Optimized for Webhooks):
+ * - Local-first: Use SQLite cache for fast ticket lookups
+ * - Webhook-driven: Webhooks handle real-time updates, scheduler checks cache frequently
+ * - Periodic sync: Full API sync every 5 minutes for consistency
  * - One ticket at a time: Focus on fully refining each ticket before moving on
- * - Conserve API calls: Poll infrequently, cache ticket data during a work session
- * - Human-paced: Wait for human responses naturally, don't spam checks
  */
 export class QueueScheduler {
   private running = false;
   private pollInterval: NodeJS.Timeout | null = null;
-  private responseCheckInterval: NodeJS.Timeout | null = null;
+  private fullSyncInterval: NodeJS.Timeout | null = null;
   private pollIntervalMs: number;
-  private responseCheckIntervalMs: number;
+  private fullSyncIntervalMs: number;
 
-  // Track tickets we're waiting for responses on (to avoid re-fetching)
+  // Track tickets we're waiting for responses on (webhooks will notify us)
   private ticketsAwaitingResponse: Map<string, { ticketId: string; identifier: string; waitingFor: string; lastChecked: Date }> = new Map();
 
-  // Cache of last fetched tickets to avoid refetching
-  private cachedTickets: TicketInfo[] = [];
-  private cacheTime: Date | null = null;
-  private readonly cacheTtlMs = 2 * 60 * 1000; // Cache valid for 2 minutes
-
-  constructor(pollIntervalMs = DEFAULT_POLL_INTERVAL_MS, responseCheckIntervalMs = DEFAULT_RESPONSE_CHECK_INTERVAL_MS) {
+  constructor(pollIntervalMs = DEFAULT_POLL_INTERVAL_MS, fullSyncIntervalMs = DEFAULT_FULL_SYNC_INTERVAL_MS) {
     this.pollIntervalMs = pollIntervalMs;
-    this.responseCheckIntervalMs = responseCheckIntervalMs;
+    this.fullSyncIntervalMs = fullSyncIntervalMs;
   }
 
   /**
@@ -63,27 +59,27 @@ export class QueueScheduler {
     logger.info(
       {
         pollIntervalMs: this.pollIntervalMs,
-        responseCheckIntervalMs: this.responseCheckIntervalMs,
-        pollIntervalMinutes: Math.round(this.pollIntervalMs / 60000),
-        responseCheckIntervalMinutes: Math.round(this.responseCheckIntervalMs / 60000),
+        fullSyncIntervalMs: this.fullSyncIntervalMs,
+        pollIntervalSeconds: Math.round(this.pollIntervalMs / 1000),
+        fullSyncIntervalMinutes: Math.round(this.fullSyncIntervalMs / 60000),
       },
-      'Starting queue scheduler (slow mode)'
+      'Starting queue scheduler (webhook-optimized mode)'
     );
 
-    // Initial poll after a short delay to let the system settle
+    // Initial full sync after a short delay to populate cache
     setTimeout(() => {
-      this.pollForNewTickets();
-    }, 5000);
+      this.fullSyncWithLinear();
+    }, 2000);
 
-    // Set up intervals - these are now much slower
+    // Fast local poll - checks SQLite cache for new work (no API calls)
     this.pollInterval = setInterval(() => {
-      this.pollForNewTickets();
+      this.pollLocalCache();
     }, this.pollIntervalMs);
 
-    // Check for responses less frequently
-    this.responseCheckInterval = setInterval(() => {
-      this.checkForResponses();
-    }, this.responseCheckIntervalMs);
+    // Periodic full sync with Linear API for consistency
+    this.fullSyncInterval = setInterval(() => {
+      this.fullSyncWithLinear();
+    }, this.fullSyncIntervalMs);
   }
 
   /**
@@ -94,141 +90,137 @@ export class QueueScheduler {
       clearInterval(this.pollInterval);
       this.pollInterval = null;
     }
-    if (this.responseCheckInterval) {
-      clearInterval(this.responseCheckInterval);
-      this.responseCheckInterval = null;
+    if (this.fullSyncInterval) {
+      clearInterval(this.fullSyncInterval);
+      this.fullSyncInterval = null;
     }
     this.running = false;
     this.ticketsAwaitingResponse.clear();
-    this.cachedTickets = [];
-    this.cacheTime = null;
     logger.info('Queue scheduler stopped');
   }
 
   /**
-   * Get tickets, using cache if available and fresh
+   * Poll local SQLite cache for tickets that need work.
+   * This is fast (no API calls) and runs frequently.
+   * Webhooks update the cache, so we just need to check for actionable tickets.
    */
-  private async getTicketsWithCache(forceRefresh = false): Promise<TicketInfo[]> {
-    // Check if cache is valid
-    if (!forceRefresh && this.cacheTime && this.cachedTickets.length > 0) {
-      const cacheAge = Date.now() - this.cacheTime.getTime();
-      if (cacheAge < this.cacheTtlMs) {
-        logger.debug({ cacheAgeSeconds: Math.round(cacheAge / 1000) }, 'Using cached tickets');
-        return this.cachedTickets;
-      }
-    }
+  pollLocalCache(): number {
+    // NOTE: We removed the global pending/processing check that used to skip ALL polling.
+    // That was causing tickets to get stuck - if one ticket had a slow/stuck task,
+    // ALL other tickets were blocked from being picked up.
+    // Now we check per-ticket in the loop below instead.
 
-    // Fetch fresh data
-    const tickets = await linearClient.getTickets();
-    this.cachedTickets = tickets;
-    this.cacheTime = new Date();
-    return tickets;
-  }
+    // Get tickets from local SQLite cache (no API call!)
+    const tickets = linearCache.getTickets();
 
-  /**
-   * Poll Linear for tickets and enqueue new ones for evaluation.
-   * This is now much less frequent and focuses on finding NEW work.
-   */
-  async pollForNewTickets(): Promise<number> {
-    // Skip polling if rate limited
-    if (linearClient.isRateLimited()) {
-      const resetAt = linearClient.getRateLimitResetAt();
-      logger.debug({ resetAt: resetAt?.toLocaleTimeString() }, 'Skipping poll - rate limited');
+    if (tickets.length === 0) {
+      logger.debug('No tickets in local cache');
       return 0;
     }
 
-    // Check if we have active work - if so, skip polling for new tickets
-    const pendingCount = linearQueue.getPendingCount();
-    const processingCount = linearQueue.getProcessingCount();
-    if (pendingCount > 0 || processingCount > 0) {
-      logger.debug(
-        { pendingCount, processingCount },
-        'Skipping poll - already have work queued'
+    let enqueued = 0;
+
+    // Only enqueue ONE new ticket at a time - focus on thoroughness
+    for (const ticket of tickets) {
+      // Skip completed/canceled tickets
+      if (ticket.state.type === 'completed' || ticket.state.type === 'canceled') {
+        continue;
+      }
+
+      // Skip if ticket is assigned (manual work)
+      if (ticket.assignee) {
+        continue;
+      }
+
+      // Skip if we already have ANY active task for this ticket
+      if (linearQueue.hasAnyActiveTask(ticket.id)) {
+        continue;
+      }
+
+      // Skip if we just processed this ticket recently
+      if (linearQueue.wasRecentlyProcessed(ticket.id, 5)) {
+        continue;
+      }
+
+      // Check for TaskAgent labels to determine state
+      const hasTaskAgentLabel = ticket.labels.some(
+        (l) => l.name === 'task-agent' || l.name.startsWith('ta:')
       );
+
+      // For tickets with TaskAgent labels, determine what task to enqueue based on label
+      if (hasTaskAgentLabel) {
+        enqueued += this.enqueueBasedOnLabel(ticket);
+      } else {
+        // New ticket - enqueue for evaluation
+        const item = linearQueue.enqueue({
+          ticketId: ticket.id,
+          ticketIdentifier: ticket.identifier,
+          taskType: 'evaluate',
+          priority: mapPriority(ticket.priority),
+        });
+        if (item) {
+          enqueued++;
+          logger.info(
+            { ticketId: ticket.identifier, priority: ticket.priority },
+            'Enqueued ticket for evaluation (from cache)'
+          );
+        }
+      }
+
+      // Only enqueue ONE ticket per poll cycle - focus on one at a time
+      if (enqueued > 0) {
+        break;
+      }
+    }
+
+    if (enqueued > 0) {
+      logger.debug({ enqueued, cacheSize: tickets.length }, 'Enqueued ticket from local cache');
+    }
+
+    return enqueued;
+  }
+
+  /**
+   * Full sync with Linear API for consistency.
+   * This runs less frequently (every 5 minutes) to catch any missed updates.
+   */
+  async fullSyncWithLinear(): Promise<number> {
+    // Skip if rate limited
+    if (linearClient.isRateLimited()) {
+      const resetAt = linearClient.getRateLimitResetAt();
+      logger.debug({ resetAt: resetAt?.toLocaleTimeString() }, 'Skipping full sync - rate limited');
       return 0;
     }
 
     try {
-      logger.info('Polling Linear for new tickets');
+      logger.info('Starting full sync with Linear API');
 
-      // Force refresh cache on poll
-      const tickets = await this.getTicketsWithCache(true);
+      // Fetch all tickets from Linear (this updates the cache automatically)
+      const tickets = await linearClient.getTickets();
 
-      let enqueued = 0;
+      logger.info(
+        { ticketCount: tickets.length },
+        'Full sync complete - cache updated'
+      );
 
-      // Only enqueue ONE new ticket at a time - focus on thoroughness
-      for (const ticket of tickets) {
-        const labelNames = ticket.labels.map(l => l.name).join(', ') || 'none';
-
-        // Skip if ticket is assigned (manual work)
-        if (ticket.assignee) {
-          logger.debug({ ticketId: ticket.identifier, reason: 'assigned' }, 'Skipping ticket');
-          continue;
-        }
-
-        // Skip if we already have ANY active task for this ticket
-        if (linearQueue.hasAnyActiveTask(ticket.id)) {
-          logger.debug({ ticketId: ticket.identifier, reason: 'active_task' }, 'Skipping ticket');
-          continue;
-        }
-
-        // Skip if we just processed this ticket recently (shorter cooldown for faster iteration)
-        if (linearQueue.wasRecentlyProcessed(ticket.id, 5)) { // 5 minute cooldown (was 15)
-          logger.debug({ ticketId: ticket.identifier, reason: 'recently_processed' }, 'Skipping ticket');
-          continue;
-        }
-
-        // Check for TaskAgent labels to determine state
-        const hasTaskAgentLabel = ticket.labels.some(
-          (l) => l.name === 'task-agent' || l.name.startsWith('ta:')
-        );
-
-        logger.debug(
-          { ticketId: ticket.identifier, labels: labelNames, hasTaskAgentLabel },
-          'Evaluating ticket for enqueueing'
-        );
-
-        // For tickets with TaskAgent labels, determine what task to enqueue based on label
-        if (hasTaskAgentLabel) {
-          enqueued += this.enqueueBasedOnLabel(ticket);
-        } else {
-          // New ticket - enqueue for evaluation
-          const item = linearQueue.enqueue({
-            ticketId: ticket.id,
-            ticketIdentifier: ticket.identifier,
-            taskType: 'evaluate',
-            priority: mapPriority(ticket.priority),
-          });
-          if (item) {
-            enqueued++;
-            logger.info(
-              { ticketId: ticket.identifier, priority: ticket.priority },
-              'Enqueued ticket for evaluation'
-            );
-          }
-        }
-
-        // Only enqueue ONE ticket per poll cycle - focus on one at a time
-        if (enqueued > 0) {
-          break;
-        }
-      }
-
-      if (enqueued > 0) {
-        logger.info({ enqueued, totalTickets: tickets.length }, 'Enqueued ticket from poll');
-      } else {
-        logger.debug({ totalTickets: tickets.length }, 'No new tickets to enqueue');
-      }
-
-      return enqueued;
+      // After sync, poll local cache to find work
+      return this.pollLocalCache();
     } catch (error) {
       if (error instanceof RateLimitError) {
-        logger.warn({ resetAt: error.resetAt }, 'Rate limited, skipping poll');
+        logger.warn({ resetAt: error.resetAt }, 'Rate limited during full sync');
       } else {
-        logger.error({ error }, 'Error polling for tickets');
+        logger.error({ error }, 'Error during full sync with Linear');
       }
       return 0;
     }
+  }
+
+  /**
+   * Legacy method for compatibility - now uses local cache poll
+   * @deprecated Use pollLocalCache() or fullSyncWithLinear() instead
+   */
+  async pollForNewTickets(): Promise<number> {
+    return this.pollLocalCache();
   }
 
   /**
@@ -269,82 +261,6 @@ export class QueueScheduler {
   }
 
   /**
-   * Check for responses on tickets we're waiting for.
-   * Only checks tickets we know are waiting, not all tickets.
-   */
-  private async checkForResponses(): Promise<void> {
-    // Skip if rate limited
-    if (linearClient.isRateLimited()) {
-      return;
-    }
-
-    // Skip if no tickets awaiting response
-    if (this.ticketsAwaitingResponse.size === 0) {
-      logger.debug('No tickets awaiting response');
-      return;
-    }
-
-    // Skip if we already have work queued
-    const pendingCount = linearQueue.getPendingCount();
-    if (pendingCount > 0) {
-      logger.debug({ pendingCount }, 'Skipping response check - already have work queued');
-      return;
-    }
-
-    try {
-      // Use cached tickets if available, otherwise fetch
-      const tickets = await this.getTicketsWithCache();
-
-      // Check each ticket we're waiting on
-      for (const [ticketId, awaiting] of this.ticketsAwaitingResponse) {
-        // Find the ticket in our list
-        const ticket = tickets.find(t => t.id === ticketId);
-        if (!ticket) {
-          // Ticket no longer in our list - maybe completed or cancelled
-          this.ticketsAwaitingResponse.delete(ticketId);
-          continue;
-        }
-
-        // Check if there's already an active task
-        if (linearQueue.hasActiveTask(ticketId, 'check_response')) {
-          continue;
-        }
-
-        // Only check if enough time has passed since last check (at least 2 minutes)
-        const timeSinceLastCheck = Date.now() - awaiting.lastChecked.getTime();
-        if (timeSinceLastCheck < 2 * 60 * 1000) {
-          continue;
-        }
-
-        // Enqueue a response check
-        const item = linearQueue.enqueue({
-          ticketId: ticket.id,
-          ticketIdentifier: ticket.identifier,
-          taskType: 'check_response',
-          priority: mapPriority(ticket.priority),
-          inputData: {
-            waitingFor: awaiting.waitingFor,
-          },
-        });
-
-        if (item) {
-          awaiting.lastChecked = new Date();
-          logger.info(
-            { ticketId: ticket.identifier, waitingFor: awaiting.waitingFor },
-            'Enqueued response check'
-          );
-          // Only check ONE ticket per cycle
-          break;
-        }
-      }
-    } catch (error) {
-      if (!(error instanceof RateLimitError)) {
-        logger.error({ error }, 'Error checking for responses');
-      }
-    }
-  }
-
-  /**
    * Enqueue appropriate task based on ticket's current label state
    */
   private enqueueBasedOnLabel(ticket: TicketInfo): number {
@@ -370,21 +286,22 @@ export class QueueScheduler {
         return 0;
       }
       // No active Claude task but has task-agent label - this ticket may be stuck
-      // Log for debugging but don't auto-recover (manual intervention needed)
-      logger.warn(
+      // Don't spam logs - just skip quietly (debug level only)
+      logger.debug(
         { ticketId: ticket.identifier },
-        'Ticket has task-agent label but no active Claude task - may be stuck'
+        'Ticket has task-agent label but no active Claude task - skipping'
       );
       return 0;
     }
 
-    const labelToTaskType: Record<string, { taskType: 'evaluate' | 'refine' | 'check_response' | 'generate_prompt'; inputData?: Record<string, unknown>; priorityBoost?: number }> = {
+    const labelToTaskType: Record<string, { taskType: 'evaluate' | 'refine' | 'generate_prompt'; inputData?: Record<string, unknown>; priorityBoost?: number }> = {
       'ta:evaluating': { taskType: 'evaluate' },
       'ta:needs-refinement': { taskType: 'refine' },
       'ta:refining': { taskType: 'refine' },
-      // Response checks get priority boost - we want to maintain conversation flow
-      'ta:awaiting-response': { taskType: 'check_response', inputData: { waitingFor: 'questions' }, priorityBoost: -1 },
-      'ta:pending-approval': { taskType: 'check_response', inputData: { waitingFor: 'approval' }, priorityBoost: -1 },
+      // Awaiting response states - fallback for when webhooks miss the response
+      // Always re-evaluate to check if new info came in (readiness is the source of truth)
+      'ta:awaiting-response': { taskType: 'evaluate', priorityBoost: 1 },
+      'ta:pending-approval': { taskType: 'evaluate', priorityBoost: 1 },
       'ta:approved': { taskType: 'generate_prompt' },
       'ta:generating-prompt': { taskType: 'generate_prompt' },
     };
@@ -427,10 +344,17 @@ export class QueueScheduler {
   }
 
   /**
-   * Manually trigger a poll (useful for testing or on-demand refresh)
+   * Manually trigger a full sync with Linear (useful for testing or on-demand refresh)
    */
   async triggerPoll(): Promise<number> {
-    return this.pollForNewTickets();
+    return this.fullSyncWithLinear();
+  }
+
+  /**
+   * Manually trigger a local cache poll (faster, no API call)
+   */
+  triggerLocalPoll(): number {
+    return this.pollLocalCache();
   }
 }
 

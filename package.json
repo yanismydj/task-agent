@@ -9,6 +9,7 @@
     "start": "node dist/index.js",
     "dev": "tsx scripts/dev.ts",
     "dev:daemon": "tsx watch src/index.ts",
+    "init": "tsx scripts/init.ts",
     "auth": "tsx scripts/auth.ts",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit"

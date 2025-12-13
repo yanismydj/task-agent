@@ -323,6 +323,25 @@ export class QueueManager {
       claude: claudeQueue.resetStuckTasks(),
     };
   }
+
+  /**
+   * Reset tasks that have been stuck in 'processing' state for too long.
+   * Call this periodically (e.g., every 5 minutes) to recover from hung tasks.
+   * @param olderThanMinutes Only reset tasks processing for longer than this
+   */
+  resetStuckProcessingTasks(olderThanMinutes = 10): { linear: number; claude: number } {
+    const linear = linearQueue.resetStuckTasks(olderThanMinutes);
+    const claude = claudeQueue.resetStuckTasks(olderThanMinutes);
+
+    if (linear > 0 || claude > 0) {
+      logger.warn(
+        { linear, claude, olderThanMinutes },
+        'Reset stuck processing tasks (periodic health check)'
+      );
+    }
+
+    return { linear, claude };
+  }
 }
 
 // Export singleton instance

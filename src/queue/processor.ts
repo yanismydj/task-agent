@@ -4,7 +4,7 @@ import { claudeQueue, type ClaudeQueueItem } from './claude-queue.js';
 import { queueScheduler } from './scheduler.js';
 import { linearClient, RateLimitError } from '../linear/client.js';
 import { worktreeManager } from '../agents/worktree.js';
-import { buildCodebaseContext } from '../utils/codebase-context.js';
+import { buildDualContext } from '../utils/context-builder.js';
 import { config } from '../config.js';
 import {
   readinessScorerAgent,
@@ -20,19 +20,24 @@ import type {
   TicketRefinerInput,
   PromptGeneratorInput,
 } from '../agents/core/index.js';
-import { descriptionApprovalManager } from './description-approvals.js';
+import type { DescriptionConsolidatorInput } from '../agents/impl/description-consolidator.js';
+// descriptionApprovalManager is used by webhook handler for description rewrites
+// import { descriptionApprovalManager } from './description-approvals.js';
 
 const logger = createChildLogger({ module: 'queue-processor' });
 
 // Note: We always go through refinement now - the refiner decides if questions are needed
-const TASK_AGENT_TAG = '[TaskAgent]';
-const TASK_AGENT_TAG_ESCAPED = '\\[TaskAgent\\]'; // Markdown-escaped version
-const APPROVAL_TAG = '[TaskAgent Proposal]';
-const WORKING_TAG = '[TaskAgent Working]';
 
-// Helper to check if a comment body contains TaskAgent tags (handles both escaped and unescaped)
-function hasTaskAgentTag(body: string): boolean {
-  return body.includes(TASK_AGENT_TAG) || body.includes(TASK_AGENT_TAG_ESCAPED);
+// Helper to check if a comment is from TaskAgent
+function isTaskAgentComment(user?: { id?: string; isMe?: boolean } | null): boolean {
+  // Primary: check user.isMe flag from API (most reliable)
+  if (user?.isMe) return true;
+  // Fallback: check user ID against cached bot ID
+  if (user?.id) {
+    const botUserId = linearClient.getCachedBotUserId();
+    if (botUserId && user.id === botUserId) return true;
+  }
+  return false;
 }
 
 // Track agent sessions per ticket
@@ -231,7 +236,7 @@ export class QueueProcessor {
 
   private async handleEvaluate(task: LinearQueueItem): Promise<void> {
     // Use cache-first lookup to reduce API calls
-    const ticket = await linearClient.getTicketCached(task.ticketId);
+    let ticket = await linearClient.getTicketCached(task.ticketId);
     if (!ticket) {
       linearQueue.fail(task.id, 'Ticket not found');
       return;
@@ -239,6 +244,25 @@ export class QueueProcessor {
 
     // Use cached comments if available
     const comments = await linearClient.getCommentsCached(task.ticketId);
+
+    // Check if we have Q&A to consolidate before evaluating
+    // This ensures the description is updated with human answers before scoring
+    const consolidated = await this.maybeConsolidateDescription(
+      task.ticketId,
+      task.ticketIdentifier,
+      ticket.title,
+      ticket.description || '',
+      comments
+    );
+
+    // If consolidation happened, refetch the ticket with updated description
+    if (consolidated) {
+      ticket = await linearClient.getTicketCached(task.ticketId, 0); // Force refresh (maxAgeSeconds=0)
+      if (!ticket) {
+        linearQueue.fail(task.id, 'Ticket not found after consolidation');
+        return;
+      }
+    }
 
     const input: AgentInput<ReadinessScorerInput> = {
       ticketId: task.ticketId,
@@ -278,7 +302,29 @@ export class QueueProcessor {
       return;
     }
 
-    // Always go through refinement first - let the refiner decide if questions are needed
+    // Check if this is an explicit approval via emoji reaction
+    const emojiReaction = task.inputData?.emojiReaction as string | undefined;
+    if (emojiReaction === 'approved') {
+      // User explicitly approved - skip refinement and go straight to prompt generation
+      logger.info({ ticketId: task.ticketIdentifier }, 'User approved via emoji - generating prompt');
+      await this.syncLabel(task.ticketId, 'ta:approved');
+      this.callbacks.onStateChange?.(task.ticketId, 'approved', readiness);
+
+      linearQueue.enqueue({
+        ticketId: task.ticketId,
+        ticketIdentifier: task.ticketIdentifier,
+        taskType: 'generate_prompt',
+        priority: task.priority,
+        readinessScore: readiness.score,
+        inputData: { readiness },
+      });
+      return;
+    } else if (emojiReaction === 'rejected') {
+      // User rejected - go back to refinement to ask more questions
+      logger.info({ ticketId: task.ticketIdentifier }, 'User rejected via emoji - will ask more questions');
+    }
+
+    // Go through refinement - let the refiner decide if questions are needed
     // or if we should proceed directly to approval. This ensures consistent flow.
     await this.syncLabel(task.ticketId, 'ta:needs-refinement');
     this.callbacks.onStateChange?.(task.ticketId, 'needs_refinement', readiness);
@@ -291,7 +337,7 @@ export class QueueProcessor {
       taskType: 'refine',
       priority: task.priority,
       readinessScore: readiness.score,
-      inputData: { readiness },
+      inputData: { readiness, emojiReaction },
     });
   }
 
@@ -319,13 +365,13 @@ export class QueueProcessor {
     // Use cached comments if available
     const comments = await linearClient.getCommentsCached(task.ticketId);
 
-    // Build dynamic codebase context from filesystem and Linear
+    // Build dual context from repo summary and Linear tickets
     // This helps the refiner ask smart questions instead of asking about obvious tech choices
-    const codebaseContext = await buildCodebaseContext(
-      config.agents.workDir,
+    const codebaseContext = await buildDualContext(config.agents.workDir, {
+      tokenBudget: 8000,
+      includeLinearTickets: true,
       linearClient,
-      task.ticketId
-    );
+    });
 
     const input: AgentInput<TicketRefinerInput> = {
       ticketId: task.ticketId,
@@ -337,7 +383,7 @@ export class QueueProcessor {
         existingComments: comments.map((c) => ({
           body: c.body,
           createdAt: c.createdAt,
-          isFromTaskAgent: c.user?.isMe || hasTaskAgentTag(c.body),
+          isFromTaskAgent: isTaskAgentComment(c.user),
         })),
         codebaseContext,
       },
@@ -358,17 +404,9 @@ export class QueueProcessor {
       await this.syncLabel(task.ticketId, 'ta:pending-approval');
       this.callbacks.onStateChange?.(task.ticketId, 'ready_for_approval');
 
-      // Register that we're waiting for approval
+      // Register that we're waiting for approval - webhook will trigger evaluation when user responds
       queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'approval');
-
-      linearQueue.enqueue({
-        ticketId: task.ticketId,
-        ticketIdentifier: task.ticketIdentifier,
-        taskType: 'check_response',
-        priority: task.priority,
-        readinessScore: readiness.score,
-        inputData: { waitingFor: 'approval', readiness },
-      });
+      // No need to enqueue check_response - webhooks will trigger evaluate when user reacts
     } else if (refinement.action === 'suggest_improvements') {
       // The refiner has suggested improvements to the description
       // Update the ticket with the improved description and proceed to approval
@@ -385,17 +423,9 @@ export class QueueProcessor {
       await this.syncLabel(task.ticketId, 'ta:pending-approval');
       this.callbacks.onStateChange?.(task.ticketId, 'ready_for_approval');
 
-      // Register that we're waiting for approval
+      // Register that we're waiting for approval - webhook will trigger evaluation when user responds
       queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'approval');
-
-      linearQueue.enqueue({
-        ticketId: task.ticketId,
-        ticketIdentifier: task.ticketIdentifier,
-        taskType: 'check_response',
-        priority: task.priority,
-        readinessScore: readiness.score,
-        inputData: { waitingFor: 'approval', readiness },
-      });
+      // No need to enqueue check_response - webhooks will trigger evaluate when user reacts
     } else if (refinement.action === 'blocked') {
       await this.syncLabel(task.ticketId, 'ta:blocked');
       this.callbacks.onStateChange?.(task.ticketId, 'blocked', { reason: refinement.blockerReason });
@@ -406,20 +436,12 @@ export class QueueProcessor {
       if (hasUnansweredQuestions) {
         logger.info(
           { ticketId: task.ticketIdentifier },
-          'Already have unanswered questions, skipping duplicate comment'
+          'Already have unanswered questions, waiting for human response'
         );
         // Still set the label and register for response checking
         await this.syncLabel(task.ticketId, 'ta:awaiting-response');
         queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
-
-        linearQueue.enqueue({
-          ticketId: task.ticketId,
-          ticketIdentifier: task.ticketIdentifier,
-          taskType: 'check_response',
-          priority: task.priority,
-          readinessScore: readiness.score,
-          inputData: { waitingFor: 'questions', readiness },
-        });
+        // No need to enqueue check_response - webhooks will trigger evaluate when human responds
       } else {
         // Post questions as individual comments
         const questionComments = ticketRefinerAgent.formatQuestionsAsComments(refinement);
@@ -430,7 +452,8 @@ export class QueueProcessor {
           const newQuestions = questionComments.filter(questionComment => {
             // Extract the core question text (first line after the tag)
             const questionLines = questionComment.split('\n').filter(l => l.trim());
-            const questionText = questionLines.find(l => !l.includes('[TaskAgent]'))?.trim() || '';
+            // First non-empty line is the question text (may start with emoji)
+            const questionText = questionLines[0]?.trim() || '';
 
             // Check if this question (or very similar) already exists in comments
             const isDuplicate = existingCommentBodies.some(existingBody => {
@@ -473,34 +496,18 @@ export class QueueProcessor {
             await this.syncLabel(task.ticketId, 'ta:awaiting-response');
             this.callbacks.onStateChange?.(task.ticketId, 'awaiting_response');
 
-            // Register that we're waiting for questions (scheduler will check periodically)
+            // Register that we're waiting for questions - webhook will trigger evaluate when human responds
             queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
-
-            linearQueue.enqueue({
-              ticketId: task.ticketId,
-              ticketIdentifier: task.ticketIdentifier,
-              taskType: 'check_response',
-              priority: task.priority,
-              readinessScore: readiness.score,
-              inputData: { waitingFor: 'questions', readiness },
-            });
+            // No need to enqueue check_response - webhooks will trigger evaluate
           } else {
             logger.info(
               { ticketId: task.ticketIdentifier },
-              'All questions were duplicates - skipping, will check for responses'
+              'All questions were duplicates - waiting for human response'
             );
             // All questions were duplicates - just wait for responses to existing questions
             await this.syncLabel(task.ticketId, 'ta:awaiting-response');
             queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
-
-            linearQueue.enqueue({
-              ticketId: task.ticketId,
-              ticketIdentifier: task.ticketIdentifier,
-              taskType: 'check_response',
-              priority: task.priority,
-              readinessScore: readiness.score,
-              inputData: { waitingFor: 'questions', readiness },
-            });
+            // No need to enqueue check_response - webhooks will trigger evaluate
           }
         }
       }
@@ -508,154 +515,31 @@ export class QueueProcessor {
   }
 
   private async handleCheckResponse(task: LinearQueueItem): Promise<void> {
-    // For response checking, we want fresh data since webhooks should have updated cache
-    // Use cached version - webhooks keep it updated
-    const comments = await linearClient.getCommentsCached(task.ticketId);
-    const waitingFor = task.inputData?.waitingFor as string;
-
+    // DEPRECATED: This handler is kept for backward compatibility with any queued tasks
+    // New flow: webhooks/scheduler trigger 'evaluate' directly, which handles everything
+    //
+    // For any check_response tasks that are still in the queue, just trigger evaluation
     logger.info(
-      { ticketId: task.ticketIdentifier, waitingFor, commentCount: comments.length },
-      'Checking for response'
+      { ticketId: task.ticketIdentifier },
+      'check_response task (legacy) - triggering evaluation instead'
     );
 
-    if (waitingFor === 'approval') {
-      // Check if we got an emoji reaction from the webhook
-      const emojiReaction = task.inputData?.emojiReaction as string | undefined;
+    // Clear any awaiting response state
+    queueScheduler.clearAwaitingResponse(task.ticketId);
+    pendingApprovalRequests.delete(task.ticketId);
 
-      // Try emoji reaction first, then fall back to comment-based detection
-      const response = emojiReaction || this.findApprovalResponse(comments);
+    // Complete this task
+    linearQueue.complete(task.id, { redirectedTo: 'evaluate' });
 
-      logger.info(
-        { ticketId: task.ticketIdentifier, response: response || 'none', viaEmoji: !!emojiReaction },
-        'Approval check result'
-      );
-
-      if (response === 'approved') {
-        // Clear from awaiting response since we got a response
-        queueScheduler.clearAwaitingResponse(task.ticketId);
-        pendingApprovalRequests.delete(task.ticketId);
-
-        linearQueue.complete(task.id, { response: 'approved' });
-        await this.syncLabel(task.ticketId, 'ta:approved');
-        this.callbacks.onStateChange?.(task.ticketId, 'approved');
-
-        // Enqueue prompt generation
-        linearQueue.enqueue({
-          ticketId: task.ticketId,
-          ticketIdentifier: task.ticketIdentifier,
-          taskType: 'generate_prompt',
-          priority: task.priority,
-          readinessScore: task.readinessScore ?? undefined,
-          inputData: task.inputData ?? undefined,
-        });
-      } else if (response === 'rejected') {
-        // Clear from awaiting response since we got a response
-        queueScheduler.clearAwaitingResponse(task.ticketId);
-        pendingApprovalRequests.delete(task.ticketId);
-
-        linearQueue.complete(task.id, { response: 'rejected' });
-        await this.syncLabel(task.ticketId, null); // Remove label
-        this.callbacks.onStateChange?.(task.ticketId, 'new');
-      } else {
-        // No response yet - re-register for future checks and complete
-        logger.debug({ ticketId: task.ticketIdentifier }, 'No approval response yet');
-        queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'approval');
-        linearQueue.complete(task.id, { response: 'none' });
-      }
-    } else if (waitingFor === 'questions') {
-      // Check if there's a human response after our questions
-      // Responses can come in two forms:
-      // 1. A new comment from a human after our questions
-      // 2. Checked checkboxes in our question comments (Linear edits the comment in place)
-      const lastAgentComment = comments
-        .filter((c) => c.user?.isMe || hasTaskAgentTag(c.body))
-        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
-
-      logger.info(
-        {
-          ticketId: task.ticketIdentifier,
-          hasAgentComment: !!lastAgentComment,
-          lastAgentCommentTime: lastAgentComment?.createdAt?.toISOString(),
-        },
-        'Checking for human response to questions'
-      );
-
-      if (lastAgentComment) {
-        // Check for new human comments after our questions
-        const humanResponses = comments.filter(
-          (c) =>
-            !c.user?.isMe &&
-            !hasTaskAgentTag(c.body) &&
-            c.createdAt > lastAgentComment.createdAt
-        );
-
-        // Also check if any question comments have checked checkboxes
-        // When users check boxes in Linear, the comment is edited in place
-        // Look for [X] or [x] in TaskAgent question comments
-        const questionComments = comments.filter(
-          (c) => hasTaskAgentTag(c.body) && (
-            c.body.includes('❗') || c.body.includes('❓') || c.body.includes('💭')
-          )
-        );
-        const hasCheckedBoxes = questionComments.some(
-          (c) => c.body.includes('[X]') || c.body.includes('[x]')
-        );
-
-        const hasHumanResponse = humanResponses.length > 0 || hasCheckedBoxes;
-
-        logger.info(
-          {
-            ticketId: task.ticketIdentifier,
-            hasHumanResponse,
-            humanResponseCount: humanResponses.length,
-            hasCheckedBoxes,
-            questionCommentsCount: questionComments.length,
-          },
-          'Human response check result'
-        );
-
-        if (hasHumanResponse) {
-          // Clear from awaiting response since we got a response
-          queueScheduler.clearAwaitingResponse(task.ticketId);
-
-          logger.info({ ticketId: task.ticketIdentifier }, 'Human responded to questions, consolidating description');
-
-          // Consolidate the Q&A into an improved description
-          await this.consolidateDescription(task, comments);
-
-          linearQueue.complete(task.id, { response: 'received' });
-
-          // Re-evaluate with new information
-          linearQueue.enqueue({
-            ticketId: task.ticketId,
-            ticketIdentifier: task.ticketIdentifier,
-            taskType: 'evaluate',
-            priority: task.priority,
-          });
-          this.callbacks.onStateChange?.(task.ticketId, 'evaluating');
-        } else {
-          // No response yet - re-register for future checks and complete
-          logger.debug({ ticketId: task.ticketIdentifier }, 'No human response yet');
-          queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
-          linearQueue.complete(task.id, { response: 'none' });
-        }
-      } else {
-        // No agent comment found - this shouldn't happen but handle it gracefully
-        // Re-enqueue for evaluation to recover
-        logger.warn({ ticketId: task.ticketIdentifier }, 'No agent comment found while waiting for questions response');
-        linearQueue.enqueue({
-          ticketId: task.ticketId,
-          ticketIdentifier: task.ticketIdentifier,
-          taskType: 'evaluate',
-          priority: task.priority,
-        });
-        linearQueue.complete(task.id, { response: 'none', error: 'no_agent_comment' });
-      }
-    } else {
-      // Unknown waitingFor value - complete the task to avoid getting stuck
-      logger.warn({ ticketId: task.ticketIdentifier, waitingFor }, 'Unknown waitingFor value in check_response');
-      linearQueue.complete(task.id, { response: 'unknown', waitingFor });
-    }
+    // Trigger evaluation - this is the source of truth for readiness
+    // The evaluation will check comments, score readiness, and decide next steps
+    linearQueue.enqueue({
+      ticketId: task.ticketId,
+      ticketIdentifier: task.ticketIdentifier,
+      taskType: 'evaluate',
+      priority: task.priority,
+      inputData: task.inputData ?? undefined, // Pass through any emoji reaction info
+    });
   }
 
   private async handleGeneratePrompt(task: LinearQueueItem): Promise<void> {
@@ -707,8 +591,6 @@ export class QueueProcessor {
         message: 'Starting work on this ticket...',
       });
     }
-
-    await linearClient.addComment(task.ticketId, `${WORKING_TAG}\n\nStarting work on this ticket...`);
 
     // Create worktree and enqueue execution
     const worktree = await worktreeManager.create(ticket.identifier);
@@ -804,13 +686,13 @@ export class QueueProcessor {
         }
         await linearClient.addComment(
           task.ticketId,
-          `${TASK_AGENT_TAG} Failed after ${task.retryCount + 1} attempts.\n\n**Error**: ${error}\n\nEscalating for human review.`
+          `Failed after ${task.retryCount + 1} attempts.\n\n**Error**: ${error}\n\nEscalating for human review.`
         );
         this.callbacks.onStateChange?.(task.ticketId, 'failed', { error });
       } else {
         await linearClient.addComment(
           task.ticketId,
-          `${TASK_AGENT_TAG} Attempt ${task.retryCount + 1} failed: ${error}\n\nRetrying...`
+          `Attempt ${task.retryCount + 1} failed: ${error}\n\nRetrying...`
         );
       }
       return;
@@ -830,7 +712,7 @@ export class QueueProcessor {
       agentSessions.delete(task.ticketId);
     }
 
-    let comment = `${TASK_AGENT_TAG} Work completed successfully!`;
+    let comment = `Work completed successfully!`;
     if (result.data.prUrl) {
       comment += `\n\n**Pull Request**: ${result.data.prUrl}`;
     }
@@ -863,83 +745,6 @@ export class QueueProcessor {
     await linearClient.syncTaskAgentLabel(ticketId, newLabel, allTaskAgentLabels);
   }
 
-  /**
-   * Consolidate Q&A from comments into an improved ticket description
-   * Now requests approval before updating
-   */
-  private async consolidateDescription(
-    task: LinearQueueItem,
-    comments: Array<{ body: string; createdAt: Date; user: { isMe: boolean } | null }>
-  ): Promise<void> {
-    // Use cache-first lookup to reduce API calls
-    const ticket = await linearClient.getTicketCached(task.ticketId);
-    if (!ticket) {
-      logger.warn({ ticketId: task.ticketIdentifier }, 'Could not fetch ticket for description consolidation');
-      return;
-    }
-
-    // Format comments for the consolidator
-    const formattedComments = comments.map((c) => ({
-      body: c.body,
-      isFromTaskAgent: c.user?.isMe || hasTaskAgentTag(c.body) || c.body.includes(APPROVAL_TAG),
-      createdAt: c.createdAt,
-    }));
-
-    // Only proceed if we have both TaskAgent questions and human answers
-    const hasQuestions = formattedComments.some((c) => c.isFromTaskAgent);
-    const hasAnswers = formattedComments.some((c) => !c.isFromTaskAgent);
-
-    logger.info(
-      {
-        ticketId: task.ticketIdentifier,
-        hasQuestions,
-        hasAnswers,
-        totalComments: formattedComments.length,
-        taskAgentComments: formattedComments.filter(c => c.isFromTaskAgent).length,
-        humanComments: formattedComments.filter(c => !c.isFromTaskAgent).length,
-      },
-      'Checking if description consolidation needed'
-    );
-
-    if (!hasQuestions || !hasAnswers) {
-      logger.debug({ ticketId: task.ticketIdentifier }, 'Skipping consolidation - no Q&A to consolidate');
-      return;
-    }
-
-    logger.info({ ticketId: task.ticketIdentifier }, 'Starting description consolidation');
-
-    try {
-      const result = await descriptionConsolidatorAgent.execute({
-        ticketId: task.ticketId,
-        ticketIdentifier: task.ticketIdentifier,
-        data: {
-          title: ticket.title,
-          originalDescription: ticket.description || '',
-          comments: formattedComments,
-        },
-      });
-
-      if (result.success && result.data?.consolidatedDescription) {
-        // Post approval request comment with full proposed description
-        await this.requestDescriptionApproval(
-          task,
-          result.data.consolidatedDescription,
-          ticket.description
-        );
-        logger.info(
-          { ticketId: task.ticketIdentifier, summary: result.data.summary },
-          'Description approval requested'
-        );
-      }
-    } catch (error) {
-      // Don't fail the task if consolidation fails - it's a nice-to-have
-      logger.warn(
-        { ticketId: task.ticketIdentifier, error },
-        'Failed to consolidate description (non-fatal)'
-      );
-    }
-  }
-
   private async requestApproval(
     task: LinearQueueItem,
     readiness: ReadinessScorerOutput
@@ -951,10 +756,10 @@ export class QueueProcessor {
     }
 
     // Check if we've already requested approval - use cached comments
-    // Note: We check for APPROVAL_TAG in body since cached comments don't have isMe flag
+    // Check for approval text since we use a hidden marker
     const comments = await linearClient.getCommentsCached(task.ticketId);
     const hasExistingApprovalRequest = comments.some(
-      (c) => c.body.includes(APPROVAL_TAG)
+      (c) => isTaskAgentComment(c.user) && c.body.includes('React with 👍 to approve')
     );
 
     if (hasExistingApprovalRequest) {
@@ -967,181 +772,149 @@ export class QueueProcessor {
     // Mark as pending before making the API call
     pendingApprovalRequests.add(task.ticketId);
 
-    // Resolve all TaskAgent question comments (their content has been incorporated into the description)
-    const questionCommentIds = comments
-      .filter((c) => hasTaskAgentTag(c.body) && (
-        c.body.includes('❗') || c.body.includes('❓') || c.body.includes('💭')
-      ))
-      .map((c) => c.id);
+    // Only resolve question comments that have been answered
+    // (consolidation will resolve them when incorporating into description)
+    // Don't resolve unanswered questions - the user still needs to see them!
 
-    if (questionCommentIds.length > 0) {
-      logger.info(
-        { ticketId: task.ticketIdentifier, count: questionCommentIds.length },
-        'Resolving TaskAgent question comments'
-      );
-      await linearClient.resolveComments(questionCommentIds);
-    }
-
-    const commentBody = `${APPROVAL_TAG}
-
-Ready to start (score: ${readiness.score}/100). React with 👍 to approve or 👎 to skip.`;
+    const commentBody = `Ready to start (score: ${readiness.score}/100). React with 👍 to approve or 👎 to skip.`;
 
     await linearClient.addComment(task.ticketId, commentBody);
     logger.info({ ticketId: task.ticketIdentifier }, 'Approval requested');
   }
 
-  private async requestDescriptionApproval(
-    task: LinearQueueItem,
-    proposedDescription: string,
-    originalDescription: string | null
-  ): Promise<void> {
-    // Check if we already have a pending approval for this ticket
-    const existingApproval = descriptionApprovalManager.getPendingByTicketId(task.ticketId);
-    if (existingApproval) {
-      logger.info(
-        { ticketId: task.ticketIdentifier, existingCommentId: existingApproval.commentId },
-        'Description approval already pending, skipping duplicate'
-      );
-      return;
-    }
-
-    // Post comment with full proposed description
-    const commentBody = `${TASK_AGENT_TAG} **Description Rewrite Proposal**
-
-Based on the Q&A discussion, I've prepared an improved ticket description. Please review the complete proposed description below and react with:
-- 👍 to approve and update the description
-- 👎 to reject and keep the current description
-
----
-
-## Proposed New Description
-
-${proposedDescription}
-
----
-
-React to this comment with 👍 or 👎 to proceed.`;
-
-    await linearClient.addComment(task.ticketId, commentBody);
-
-    // Get the comment we just posted to get its ID
-    // We need to fetch comments to get the comment ID
-    const comments = await linearClient.getComments(task.ticketId);
-    const approvalComment = comments
-      .filter(c => c.body.includes('Description Rewrite Proposal'))
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
-
-    if (!approvalComment) {
-      logger.error({ ticketId: task.ticketIdentifier }, 'Could not find approval comment after posting');
-      return;
-    }
-
-    // Store pending approval in database
-    descriptionApprovalManager.createPending(
-      task.ticketId,
-      task.ticketIdentifier,
-      approvalComment.id,
-      proposedDescription,
-      originalDescription
+  /**
+   * Check if we have Q&A that should be consolidated into the description.
+   * Returns true if consolidation was performed.
+   *
+   * Consolidation happens when:
+   * 1. There are TaskAgent questions (comments with ❗/❓/💭)
+   * 2. There are human responses to those questions (checked checkboxes or reply comments)
+   * 3. We haven't already consolidated (no consolidation marker in description)
+   */
+  private async maybeConsolidateDescription(
+    ticketId: string,
+    ticketIdentifier: string,
+    title: string,
+    description: string,
+    comments: Array<{ id: string; body: string; createdAt: Date; user: { id: string; name: string; isMe: boolean } | null }>
+  ): Promise<boolean> {
+    // Find TaskAgent question comments (unresolved ones)
+    // Resolved comments don't appear in the comments list, so any question comments
+    // we see are ones that haven't been consolidated yet
+    const questionComments = comments.filter(
+      (c) => isTaskAgentComment(c.user) && (
+        c.body.includes('❗') || c.body.includes('❓') || c.body.includes('💭')
+      )
     );
 
-    // Set workflow state label
-    await this.syncLabel(task.ticketId, 'ta:awaiting-description-approval');
-    this.callbacks.onStateChange?.(task.ticketId, 'awaiting_description_approval');
+    if (questionComments.length === 0) {
+      // No unresolved questions - either never asked or already consolidated
+      logger.debug({ ticketId: ticketIdentifier }, 'No unresolved question comments, skipping consolidation');
+      return false;
+    }
+
+    // Check if questions have been answered (via checkboxes or human comments)
+    const hasAnsweredQuestions = questionComments.some((c) => {
+      // Check for checked boxes
+      return c.body.includes('[X]') || c.body.includes('[x]');
+    });
+
+    // Also check for human reply comments (not from TaskAgent)
+    const humanComments = comments.filter(
+      (c) => !isTaskAgentComment(c.user)
+    );
+
+    // Only consolidate if we have answered questions OR human comments after the first question
+    const firstQuestionTime = questionComments[0]?.createdAt;
+    const hasHumanReplies = humanComments.some(
+      (c) => firstQuestionTime && c.createdAt > firstQuestionTime
+    );
+
+    if (!hasAnsweredQuestions && !hasHumanReplies) {
+      logger.debug({ ticketId: ticketIdentifier }, 'Questions not answered yet, skipping consolidation');
+      return false;
+    }
 
     logger.info(
-      { ticketId: task.ticketIdentifier, commentId: approvalComment.id },
-      'Description approval requested via emoji reaction'
-    );
-  }
-
-  private findApprovalResponse(
-    comments: Array<{ body: string; createdAt: Date; user: { isMe: boolean } | null }>
-  ): 'approved' | 'rejected' | null {
-    // Find the approval proposal comment
-    const proposalComment = comments.find(
-      (c) => c.body.includes(APPROVAL_TAG) && c.user?.isMe
+      {
+        ticketId: ticketIdentifier,
+        questionCount: questionComments.length,
+        hasAnsweredQuestions,
+        hasHumanReplies,
+      },
+      'Consolidating Q&A into ticket description'
     );
 
-    if (!proposalComment) {
-      // Also check by tag if isMe isn't set (webhook comments may not have it)
-      const proposalByTag = comments.find(
-        (c) => c.body.includes(APPROVAL_TAG)
+    // Build input for consolidator
+    const input: AgentInput<DescriptionConsolidatorInput> = {
+      ticketId,
+      ticketIdentifier,
+      data: {
+        title,
+        originalDescription: description,
+        comments: comments.map((c) => ({
+          body: c.body,
+          isFromTaskAgent: isTaskAgentComment(c.user),
+          createdAt: c.createdAt,
+        })),
+      },
+    };
+
+    const result = await descriptionConsolidatorAgent.execute(input);
+
+    if (!result.success || !result.data) {
+      logger.warn(
+        { ticketId: ticketIdentifier, error: result.error },
+        'Description consolidation failed, continuing without update'
       );
-      if (!proposalByTag) {
-        logger.debug('No approval proposal comment found');
-        return null;
-      }
-      // Use the tag-based match if isMe check didn't find it
-      logger.debug('Found approval proposal by tag (not isMe check)');
+      return false;
     }
 
-    const effectiveProposal = proposalComment || comments.find((c) => c.body.includes(APPROVAL_TAG))!;
-
-    logger.debug(
-      { proposalCreatedAt: effectiveProposal.createdAt },
-      'Found approval proposal'
+    // Update the ticket description
+    await linearClient.updateDescription(ticketId, result.data.consolidatedDescription);
+    logger.info(
+      { ticketId: ticketIdentifier, summary: result.data.summary },
+      'Ticket description updated with consolidated Q&A'
     );
 
-    // Check responses after the proposal
-    const sortedComments = comments.sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
-    );
-
-    for (const comment of sortedComments) {
-      // Skip our own comments (by isMe or by tag)
-      if (comment.user?.isMe) continue;
-      if (hasTaskAgentTag(comment.body) || comment.body.includes(APPROVAL_TAG)) continue;
-      if (comment.createdAt <= effectiveProposal.createdAt) continue;
-
-      const body = comment.body.toLowerCase().trim();
-
-      if (
-        body === 'yes' ||
-        body === 'approve' ||
-        body === 'approved' ||
-        body === 'go' ||
-        body === 'start' ||
-        body === 'ok' ||
-        body === 'okay' ||
-        body.includes('looks good') ||
-        body.includes('go ahead') ||
-        body.includes('sounds good') ||
-        body.includes('please proceed') ||
-        body.includes('proceed')
-      ) {
-        return 'approved';
-      }
-
-      if (
-        body === 'no' ||
-        body === 'reject' ||
-        body === 'skip' ||
-        body === 'not now' ||
-        body === 'wait' ||
-        body === 'hold' ||
-        body.includes("don't") ||
-        body.includes('not yet') ||
-        body.includes('hold off')
-      ) {
-        return 'rejected';
+    // Update title if suggested AND valid
+    // Reject bad titles: too short, just punctuation, or same as original
+    const suggestedTitle = result.data.suggestedTitle;
+    if (suggestedTitle && suggestedTitle !== title) {
+      const isValidTitle = suggestedTitle.length >= 10 && /[a-zA-Z]{3,}/.test(suggestedTitle);
+      if (isValidTitle) {
+        await linearClient.updateTitle(ticketId, suggestedTitle);
+        logger.info(
+          { ticketId: ticketIdentifier, oldTitle: title, newTitle: suggestedTitle },
+          'Ticket title updated'
+        );
+      } else {
+        logger.warn(
+          { ticketId: ticketIdentifier, suggestedTitle },
+          'Rejected invalid suggested title'
+        );
       }
     }
 
-    return null;
+    // Resolve the question comments since they've been incorporated
+    const questionCommentIds = questionComments.map((c) => c.id);
+    if (questionCommentIds.length > 0) {
+      await linearClient.resolveComments(questionCommentIds);
+      logger.info(
+        { ticketId: ticketIdentifier, count: questionCommentIds.length },
+        'Resolved TaskAgent question comments after consolidation'
+      );
+    }
+
+    return true;
   }
 
-  /**
-   * Check if we've already posted questions that haven't been answered yet
-   * Questions are considered unanswered if they have checkboxes that haven't been checked
-   */
   private hasUnansweredQuestions(
     comments: Array<{ body: string; createdAt: Date; user: { isMe: boolean } | null }>
   ): boolean {
     // Question comments use emoji markers: ❗ (critical), ❓ (important), 💭 (nice to have)
-    // Check for TaskAgent tag in body since isMe may not be reliable for cached comments
     const questionComments = comments.filter(
-      (c) => hasTaskAgentTag(c.body) && (
+      (c) => isTaskAgentComment(c.user) && (
         c.body.includes('❗') || c.body.includes('❓') || c.body.includes('💭')
       )
     );
@@ -1150,13 +923,27 @@ React to this comment with 👍 or 👎 to proceed.`;
       return false;
     }
 
-    // Check if ANY question comment has unchecked boxes
-    // A question with checkboxes is unanswered if it has [ ] but no [X] or [x]
+    // Find the most recent question comment timestamp
+    const mostRecentQuestion = questionComments.reduce((latest, c) =>
+      c.createdAt > latest.createdAt ? c : latest
+    );
+
+    // Check if there's a human comment AFTER the most recent question
+    // Human comments are those not from TaskAgent
+    const humanCommentAfterQuestion = comments.some((c) =>
+      !isTaskAgentComment(c.user) && c.createdAt > mostRecentQuestion.createdAt
+    );
+
+    if (humanCommentAfterQuestion) {
+      // Human responded after our questions - consider answered
+      return false;
+    }
+
+    // No human comment after questions - check checkbox state as fallback
     const hasUncheckedBoxes = questionComments.some((c) => {
       const hasCheckboxes = c.body.includes('[ ]') || c.body.includes('[X]') || c.body.includes('[x]');
       if (!hasCheckboxes) {
-        // Question without checkboxes - consider it a free-form question
-        // These are harder to track, so we'll be conservative and say unanswered
+        // Question without checkboxes and no human reply after - unanswered
         return true;
       }
       // Has checkboxes - check if any are still unchecked
