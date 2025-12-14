@@ -739,6 +739,7 @@ export class QueueProcessor {
           identifier: ticket.identifier,
           title: ticket.title,
           description: ticket.description || '',
+          url: ticket.url,
           attachments: attachmentsForPrompt.length > 0 ? attachmentsForPrompt : undefined,
         },
         constraints: {
@@ -932,6 +933,7 @@ export class QueueProcessor {
           identifier: ticket.identifier,
           title: ticket.title,
           description: ticket.description || '',
+          url: ticket.url,
           attachments: attachmentsForPrompt.length > 0 ? attachmentsForPrompt : undefined,
         },
         constraints: {

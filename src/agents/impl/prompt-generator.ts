@@ -251,6 +251,12 @@ IMPORTANT INSTRUCTIONS:
 5. Create a pull request with:
    - Title: "<brief description>"
    - Body: Summary of changes and link to the ticket
+   - IMPORTANT: Include the Linear ticket link in the PR body:
+
+     ## Related Linear Ticket
+     ${ticket.url}
+
+     This ensures the PR is properly linked to the Linear ticket.
 6. Branch name should follow pattern: ${constraints.branchNaming}
 
 STRICT CONSTRAINTS:
