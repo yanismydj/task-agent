@@ -49,7 +49,24 @@ export const LinearTeamStep: React.FC<LinearTeamStepProps> = ({
           setTeams(fetchedTeams);
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch teams');
+        const errorMessage = err instanceof Error ? err.message : 'Failed to fetch teams';
+
+        // Check if this is an authentication error (token revoked/invalid)
+        const isAuthError = errorMessage.includes('Authentication') ||
+          errorMessage.includes('Unauthorized') ||
+          errorMessage.includes('401') ||
+          errorMessage.includes('403') ||
+          (err as any)?.response?.status === 401 ||
+          (err as any)?.response?.status === 403;
+
+        if (isAuthError) {
+          // Invalidate the cached token so user can re-authorize
+          const auth = new LinearAuth({ clientId, clientSecret });
+          auth.invalidateToken();
+          setError('OAuth token was revoked or expired. Please go back to step 6 and re-authorize.');
+        } else {
+          setError(errorMessage);
+        }
         setManualInput(true);
       } finally {
         setLoading(false);
