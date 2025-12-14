@@ -16,7 +16,6 @@ export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
   onComplete,
 }) => {
   const [error, setError] = useState<string | null>(null);
-  const [webhookSecret, setWebhookSecret] = useState(currentWebhookSecret);
 
   const oauthCallbackUrl = ngrokUrl
     ? `${ngrokUrl}/oauth/callback`
@@ -24,12 +23,14 @@ export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
   const webhookUrl = ngrokUrl ? `${ngrokUrl}/webhook` : '<ngrok-url>/webhook';
 
   const handleWebhookSecretSubmit = (value: string) => {
-    if (!value.trim()) {
+    // Use existing value if user just pressed Enter
+    const finalValue = value.trim() || currentWebhookSecret;
+    if (!finalValue) {
       setError('Webhook signing secret is required');
       return;
     }
     setError(null);
-    onComplete(value);
+    onComplete(finalValue);
   };
 
   return (

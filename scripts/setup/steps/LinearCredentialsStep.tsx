@@ -20,22 +20,26 @@ export const LinearCredentialsStep: React.FC<LinearCredentialsStepProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   const handleClientIdSubmit = (value: string) => {
-    if (!value.trim()) {
+    // Use existing value if user just pressed Enter
+    const finalValue = value.trim() || currentClientId;
+    if (!finalValue) {
       setError('Client ID is required');
       return;
     }
     setError(null);
-    setClientId(value);
+    setClientId(finalValue);
     setCurrentField('clientSecret');
   };
 
   const handleClientSecretSubmit = (value: string) => {
-    if (!value.trim()) {
+    // Use existing value if user just pressed Enter
+    const finalValue = value.trim() || currentClientSecret;
+    if (!finalValue) {
       setError('Client Secret is required');
       return;
     }
     setError(null);
-    onComplete(clientId, value);
+    onComplete(clientId, finalValue);
   };
 
   if (currentField === 'clientId') {
