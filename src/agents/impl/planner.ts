@@ -77,6 +77,7 @@ export class PlannerAgent implements Agent<PlannerInput, PlannerOutput> {
   readonly outputSchema = PlannerOutputSchema;
 
   private runningProcesses: Map<string, RunningProcess> = new Map();
+  private jsonBuffer: Map<string, string> = new Map(); // Buffer for incomplete JSON lines
   private readonly MAX_OUTPUT_LINES = 10;
 
   validateInput(input: unknown): PlannerInput {
@@ -210,6 +211,7 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
         logger.warn({ ticketId: ticketIdentifier }, 'Planning mode timed out');
         childProcess.kill('SIGTERM');
         this.runningProcesses.delete(ticketIdentifier);
+        this.clearJsonBuffer(ticketIdentifier);
         reject(new AgentTimeoutError(
           'planner',
           ticketIdentifier,
@@ -221,7 +223,7 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
       childProcess.stdout.on('data', (data: Buffer) => {
         const chunk = data.toString();
         output += chunk;
-        this.appendRecentOutput(processEntry, chunk);
+        this.appendRecentOutput(processEntry, chunk, ticketIdentifier);
         logger.debug({ ticketId: ticketIdentifier, chunk: chunk.slice(0, 200) }, 'Plan mode output');
       });
 
@@ -229,13 +231,14 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
       childProcess.stderr.on('data', (data: Buffer) => {
         const chunk = data.toString();
         output += chunk;
-        this.appendRecentOutput(processEntry, chunk);
+        this.appendRecentOutput(processEntry, chunk, ticketIdentifier);
         logger.debug({ ticketId: ticketIdentifier, chunk: chunk.slice(0, 200) }, 'Plan mode stderr');
       });
 
       childProcess.on('error', (error: Error) => {
         clearTimeout(timeout);
         this.runningProcesses.delete(ticketIdentifier);
+        this.clearJsonBuffer(ticketIdentifier);
         logger.error({ ticketId: ticketIdentifier, error: error.message }, 'Planning process error');
         reject(new AgentExecutionError('planner', error.message, ticketIdentifier));
       });
@@ -243,6 +246,7 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
       childProcess.on('close', (code: number | null) => {
         clearTimeout(timeout);
         this.runningProcesses.delete(ticketIdentifier);
+        this.clearJsonBuffer(ticketIdentifier);
 
         logger.info(
           { ticketId: ticketIdentifier, exitCode: code, outputLength: output.length },
@@ -337,52 +341,127 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
   }
 
   /**
-   * Append text to recent output buffer for UI display
+   * Append text to recent output, keeping only the last N lines
+   * Handles stream-json format from Claude Code
    */
-  private appendRecentOutput(entry: RunningProcess, text: string): void {
-    // Parse stream-json output to extract meaningful content
-    const lines = text.split('\n').filter(line => line.trim());
+  private appendRecentOutput(entry: RunningProcess, text: string, processId: string): void {
+    // Get or create buffer for this process
+    let buffer = this.jsonBuffer.get(processId) || '';
+    buffer += text;
+
+    // Process complete lines (ending with newline)
+    const lines = buffer.split('\n');
+
+    // Keep the last incomplete line in the buffer
+    const lastLine = lines.pop() || '';
+    this.jsonBuffer.set(processId, lastLine);
 
     for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      // Try to parse as JSON (stream-json format)
+      const displayLine = this.extractDisplayLine(trimmed);
+      if (!displayLine) continue;
+
+      // Truncate long lines for display
+      const truncated = displayLine.length > 80 ? displayLine.slice(0, 77) + '...' : displayLine;
+      entry.recentOutput.push(truncated);
+
+      // Keep only the last N lines
+      if (entry.recentOutput.length > this.MAX_OUTPUT_LINES) {
+        entry.recentOutput.shift();
+      }
+    }
+  }
+
+  /**
+   * Clear the JSON buffer for a process (call on process exit)
+   */
+  private clearJsonBuffer(processId: string): void {
+    this.jsonBuffer.delete(processId);
+  }
+
+  /**
+   * Extract a human-readable line from stream-json output
+   */
+  private extractDisplayLine(line: string): string | null {
+    // Try to parse as JSON
+    if (line.trim().startsWith('{')) {
       try {
-        const json = JSON.parse(line);
-        // Extract content from stream-json format
-        if (json.type === 'assistant' && json.message?.content) {
-          for (const block of json.message.content) {
-            if (block.type === 'text' && block.text) {
-              const textLines = block.text.split('\n').filter((l: string) => l.trim());
-              for (const textLine of textLines) {
-                const truncated = textLine.length > 80 ? textLine.slice(0, 77) + '...' : textLine;
-                entry.recentOutput.push(truncated);
-                if (entry.recentOutput.length > this.MAX_OUTPUT_LINES) {
-                  entry.recentOutput.shift();
+        const json = JSON.parse(line) as Record<string, unknown>;
+
+        // Handle different message types from Claude Code stream-json
+        const type = json.type as string | undefined;
+
+        if (type === 'assistant' && json.message) {
+          const msg = json.message as { content?: Array<{ type: string; text?: string; name?: string; input?: Record<string, unknown> }> };
+          if (msg.content) {
+            for (const block of msg.content) {
+              if (block.type === 'text' && block.text) {
+                // Clean up the text - remove markdown formatting for display
+                const cleanText = block.text
+                  .replace(/```[\s\S]*?```/g, '[code]') // Replace code blocks
+                  .replace(/\n+/g, ' ') // Collapse newlines
+                  .trim();
+                return `💬 ${cleanText.slice(0, 80)}`;
+              }
+              if (block.type === 'tool_use' && block.name) {
+                // Show tool name with relevant context from input
+                const input = block.input;
+                let context = '';
+                if (input) {
+                  if (block.name === 'Read' && input.file_path) {
+                    const filePath = String(input.file_path);
+                    context = ` → ${filePath.split('/').slice(-2).join('/')}`;
+                  } else if (block.name === 'Grep' && input.pattern) {
+                    context = ` → "${input.pattern}"`;
+                  } else if (block.name === 'Glob' && input.pattern) {
+                    context = ` → ${input.pattern}`;
+                  }
                 }
+                return `🔧 ${block.name}${context}`;
               }
             }
           }
-        } else if (json.type === 'content_block_delta' && json.delta?.text) {
-          // Handle streaming deltas
-          const deltaText = json.delta.text.trim();
-          if (deltaText) {
-            const truncated = deltaText.length > 80 ? deltaText.slice(0, 77) + '...' : deltaText;
-            entry.recentOutput.push(truncated);
-            if (entry.recentOutput.length > this.MAX_OUTPUT_LINES) {
-              entry.recentOutput.shift();
-            }
+        }
+
+        // Skip 'user' type messages - these are tool results and aren't useful to display
+        if (type === 'user') {
+          return null;
+        }
+
+        if (type === 'result') {
+          const result = json.result as string | undefined;
+          if (result) {
+            const cleanResult = result.replace(/\n+/g, ' ').trim();
+            return `✅ ${cleanResult.slice(0, 60)}`;
+          }
+          if (json.is_error) {
+            return `❌ Error: ${(json.error as string) || 'Unknown error'}`;
           }
         }
+
+        if (type === 'system' && json.message) {
+          return `ℹ️ ${String(json.message).slice(0, 60)}`;
+        }
+
+        // Skip other internal message types that aren't useful to display
+        if (type === 'content_block_start' || type === 'content_block_delta' || type === 'content_block_stop') {
+          return null;
+        }
+
+        return null;
       } catch {
-        // Not JSON, add raw line if it's meaningful
-        const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith('{') && trimmed.length > 3) {
-          const truncated = trimmed.length > 80 ? trimmed.slice(0, 77) + '...' : trimmed;
-          entry.recentOutput.push(truncated);
-          if (entry.recentOutput.length > this.MAX_OUTPUT_LINES) {
-            entry.recentOutput.shift();
-          }
-        }
+        // Not valid JSON, treat as plain text
       }
     }
+
+    // Plain text output (non-JSON)
+    const trimmed = line.trim();
+    // Skip empty or very short lines
+    if (trimmed.length < 3) return null;
+    return trimmed;
   }
 }
 
