@@ -46,7 +46,7 @@ function loadInitialState(): SetupState {
   const env = loadEnvFile();
   return {
     workDir: env.get('AGENTS_WORK_DIR') || '',
-    workspaceSlug: '',  // Not stored in env, user needs to re-enter
+    workspaceSlug: env.get('LINEAR_WORKSPACE_SLUG') || '',
     linearClientId: env.get('LINEAR_CLIENT_ID') || '',
     linearClientSecret: env.get('LINEAR_CLIENT_SECRET') || '',
     linearWebhookSecret: env.get('LINEAR_WEBHOOK_SECRET') || '',

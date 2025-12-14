@@ -33,6 +33,7 @@ export const CompleteStep: React.FC<CompleteStepProps> = ({ state, onComplete })
 
       // Update env with collected values
       env.set('AGENTS_WORK_DIR', state.workDir);
+      env.set('LINEAR_WORKSPACE_SLUG', state.workspaceSlug);
       env.set('LINEAR_CLIENT_ID', state.linearClientId);
       env.set('LINEAR_CLIENT_SECRET', state.linearClientSecret);
       env.set('LINEAR_WEBHOOK_SECRET', state.linearWebhookSecret);
