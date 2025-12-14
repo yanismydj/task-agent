@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, useStdout } from 'ink';
 
 export interface LogEntry {
   timestamp: Date;
@@ -46,7 +46,19 @@ const formatTime = (date: Date): string => {
 };
 
 export const LogPane: React.FC<LogPaneProps> = ({ title, logs, maxLines = 15 }) => {
+  const { stdout } = useStdout();
   const displayLogs = logs.slice(-maxLines);
+
+  // Calculate max message width (60% of terminal - padding/borders/timestamp/icon)
+  const terminalWidth = stdout?.columns ?? 120;
+  const paneWidth = Math.floor(terminalWidth * 0.6);
+  // Account for: border(2) + paddingX(2) + time(8) + spaces(3) + icon(1) + module(~15)
+  const maxMessageWidth = Math.max(20, paneWidth - 35);
+
+  const truncate = (text: string, maxLen: number): string => {
+    if (text.length <= maxLen) return text;
+    return text.slice(0, maxLen - 1) + '…';
+  };
 
   return (
     <Box flexDirection="column" height="100%" paddingX={1}>
@@ -71,6 +83,9 @@ export const LogPane: React.FC<LogPaneProps> = ({ title, logs, maxLines = 15 }) 
             const icon = getLevelIcon(entry.level);
             const color = getLevelColor(entry.level);
             const module = entry.module ? `[${entry.module}]` : '';
+            const moduleWidth = module.length > 0 ? module.length + 1 : 0;
+            const availableWidth = maxMessageWidth - moduleWidth;
+            const message = truncate(entry.message, availableWidth);
 
             return (
               <Box key={`${entry.timestamp.getTime()}-${index}`}>
@@ -80,7 +95,7 @@ export const LogPane: React.FC<LogPaneProps> = ({ title, logs, maxLines = 15 }) 
                 <Text> </Text>
                 {module && <Text color="blue">{module} </Text>}
                 <Text color={entry.level === 'error' || entry.level === 'warn' ? color : 'white'}>
-                  {entry.message}
+                  {message}
                 </Text>
               </Box>
             );
