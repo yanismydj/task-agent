@@ -115,7 +115,7 @@ export const LinearTeamStep: React.FC<LinearTeamStepProps> = ({
     <Box flexDirection="column">
       <Text>Select your team:</Text>
       <Box marginTop={1}>
-        <Select options={options} onChange={onComplete} />
+        <Select options={options} onChange={onComplete} visibleOptionCount={15} />
       </Box>
     </Box>
   );
