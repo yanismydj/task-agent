@@ -972,9 +972,13 @@ export class LinearApiClient {
       const team = await client.team(this.teamId);
       const states = await team.states();
 
-      // Find "In Progress" state or equivalent (type: 'started')
+      // Find "In Progress" state with exact name match first
+      // Don't fall back to just type='started' as that could match "In Review" too
       const inProgressState = states.nodes.find(
-        (s) => s.name.toLowerCase() === 'in progress' || s.type === 'started'
+        (s) =>
+          s.name.toLowerCase() === 'in progress' ||
+          s.name.toLowerCase() === 'in dev' ||
+          s.name.toLowerCase() === 'in development'
       );
 
       if (inProgressState) {
