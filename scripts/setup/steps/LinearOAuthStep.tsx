@@ -98,12 +98,19 @@ export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
 
         <Box marginTop={1} flexDirection="column">
           <Text dimColor>After creating the app, Linear will show you:</Text>
-          <Text dimColor>   • Client ID and Client Secret</Text>
-          <Text dimColor>   • Webhook signing secret (scroll down to find it)</Text>
+          <Text dimColor>   • Client ID and Client Secret (at the top)</Text>
+          <Text dimColor>   • Webhook signing secret (scroll down to the webhook section)</Text>
         </Box>
 
         <Box marginTop={2}>
           <Text dimColor>Note: TaskAgent manages ngrok automatically when the daemon is running.</Text>
+        </Box>
+
+        <Box marginTop={2} flexDirection="column">
+          <Text>We'll ask you to enter these 3 values next:</Text>
+          <Text dimColor>   1. Client ID</Text>
+          <Text dimColor>   2. Client Secret</Text>
+          <Text dimColor>   3. Webhook signing secret</Text>
         </Box>
 
         <Box marginTop={2}>
