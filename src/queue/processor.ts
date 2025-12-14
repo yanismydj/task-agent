@@ -7,6 +7,7 @@ import { worktreeManager } from '../agents/worktree.js';
 import { buildDualContext } from '../utils/context-builder.js';
 import { config } from '../config.js';
 import { sessionStorage } from '../sessions/index.js';
+import { savePromptToCache, formatPromptForComment } from '../utils/prompt-cache.js';
 import {
   readinessScorerAgent,
   ticketRefinerAgent,
@@ -719,15 +720,6 @@ export class QueueProcessor {
         newComments,
         summary,
       };
-
-      // Post acknowledgement mentioning restart
-      await linearClient.addComment(
-        task.ticketId,
-        `Restarting work on this ticket (attempt #${previousAttemptCount + 1})...\n\n${newComments.length > 0 ? `Addressing ${newComments.length} new comment(s) with feedback.` : 'Reviewing previous attempt to identify issues.'}`
-      );
-    } else {
-      // Not a restart - post standard acknowledgement
-      await linearClient.addComment(task.ticketId, 'Starting work on this ticket...');
     }
 
     // Fetch attachments
@@ -767,6 +759,23 @@ export class QueueProcessor {
       );
       return;
     }
+
+    // Save prompt to cache if debug mode is enabled
+    const promptPath = savePromptToCache(ticket.identifier, promptResult.data.prompt);
+
+    // Post a comment with work started status (including prompt in debug mode)
+    let workStartedComment: string;
+    if (restartContext) {
+      const newCommentCount = restartContext.newComments.length;
+      workStartedComment = `Restarting work on this ticket (attempt #${restartContext.previousAttemptCount + 1})...\n\n${newCommentCount > 0 ? `Addressing ${newCommentCount} new comment(s) with feedback.` : 'Reviewing previous attempt to identify issues.'}`;
+    } else {
+      workStartedComment = 'Starting work on this ticket...';
+    }
+
+    if (config.debug.enabled && promptPath) {
+      workStartedComment += `\n\n${formatPromptForComment(promptResult.data.prompt)}`;
+    }
+    await linearClient.addComment(task.ticketId, workStartedComment);
 
     // Set issue to In Progress
     await linearClient.setIssueInProgress(task.ticketId);
@@ -942,6 +951,16 @@ export class QueueProcessor {
     }
 
     linearQueue.complete(task.id, result.data);
+
+    // Save prompt to cache if debug mode is enabled
+    savePromptToCache(ticket.identifier, result.data.prompt);
+
+    // Post a comment with work started status (including prompt in debug mode)
+    let workStartedComment = 'Starting work on this ticket...';
+    if (config.debug.enabled) {
+      workStartedComment += `\n\n${formatPromptForComment(result.data.prompt)}`;
+    }
+    await linearClient.addComment(task.ticketId, workStartedComment);
 
     // Set issue to In Progress
     await linearClient.setIssueInProgress(task.ticketId);

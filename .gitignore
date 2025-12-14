@@ -32,6 +32,7 @@ logs/
 .taskagent/token.json
 .taskagent/cache/
 .taskagent/worktrees/
+.taskagent/cached-prompts/
 
 # Legacy paths (will be auto-migrated on first run)
 .task-agent/

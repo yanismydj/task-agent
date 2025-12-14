@@ -53,6 +53,10 @@ const ConfigSchema = z.object({
   daemon: z.object({
     pollIntervalSeconds: z.number().int().min(5).default(30),
   }),
+  debug: z.object({
+    enabled: z.boolean().default(false),
+    cachePromptsDir: z.string().default('.task-agent/cached-prompts'),
+  }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -116,6 +120,10 @@ function loadConfig(): Config {
     },
     daemon: {
       pollIntervalSeconds: parseInt(process.env['DAEMON_POLL_INTERVAL_SECONDS'] || '30', 10),
+    },
+    debug: {
+      enabled: process.env['DEBUG_MODE'] === 'true',
+      cachePromptsDir: process.env['DEBUG_CACHE_PROMPTS_DIR'] || '.task-agent/cached-prompts',
     },
   };
 
