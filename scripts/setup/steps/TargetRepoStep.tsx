@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Box, Text } from 'ink';
 import { TextInput } from '@inkjs/ui';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 interface TargetRepoStepProps {
@@ -13,7 +14,7 @@ export const TargetRepoStep: React.FC<TargetRepoStepProps> = ({
   currentValue,
   onComplete,
 }) => {
-  const [value, setValue] = useState(currentValue || process.cwd());
+  const [value, setValue] = useState(currentValue || os.homedir());
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = (inputValue: string) => {
