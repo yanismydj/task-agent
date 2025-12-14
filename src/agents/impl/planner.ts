@@ -55,6 +55,13 @@ export type PlannerOutput = z.infer<typeof PlannerOutputSchema>;
  * PlannerAgent runs Claude Code in planning mode (--permission-mode plan)
  * to gather requirements through Q&A before implementation.
  */
+interface RunningProcess {
+  process: ChildProcess;
+  ticketId: string;
+  recentOutput: string[];
+  startedAt: Date;
+}
+
 export class PlannerAgent implements Agent<PlannerInput, PlannerOutput> {
   readonly config: AgentConfig = {
     type: 'code-executor', // Reuse code-executor type since it's similar
@@ -69,7 +76,8 @@ export class PlannerAgent implements Agent<PlannerInput, PlannerOutput> {
   readonly inputSchema = PlannerInputSchema;
   readonly outputSchema = PlannerOutputSchema;
 
-  private runningProcesses: Map<string, ChildProcess> = new Map();
+  private runningProcesses: Map<string, RunningProcess> = new Map();
+  private readonly MAX_OUTPUT_LINES = 10;
 
   validateInput(input: unknown): PlannerInput {
     return this.inputSchema.parse(input);
@@ -188,7 +196,13 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
-      this.runningProcesses.set(ticketIdentifier, childProcess);
+      const processEntry: RunningProcess = {
+        process: childProcess,
+        ticketId: ticketIdentifier,
+        recentOutput: [],
+        startedAt: new Date(),
+      };
+      this.runningProcesses.set(ticketIdentifier, processEntry);
 
       const timeout = setTimeout(() => {
         logger.warn({ ticketId: ticketIdentifier }, 'Planning mode timed out');
@@ -205,6 +219,7 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
       childProcess.stdout.on('data', (data: Buffer) => {
         const chunk = data.toString();
         output += chunk;
+        this.appendRecentOutput(processEntry, chunk);
         logger.debug({ ticketId: ticketIdentifier, chunk: chunk.slice(0, 200) }, 'Plan mode output');
       });
 
@@ -212,6 +227,7 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
       childProcess.stderr.on('data', (data: Buffer) => {
         const chunk = data.toString();
         output += chunk;
+        this.appendRecentOutput(processEntry, chunk);
         logger.debug({ ticketId: ticketIdentifier, chunk: chunk.slice(0, 200) }, 'Plan mode stderr');
       });
 
@@ -287,10 +303,10 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
    * Stop a running planning process
    */
   stop(ticketIdentifier: string): void {
-    const process = this.runningProcesses.get(ticketIdentifier);
-    if (process) {
+    const entry = this.runningProcesses.get(ticketIdentifier);
+    if (entry) {
       logger.info({ ticketId: ticketIdentifier }, 'Stopping planning process');
-      process.kill('SIGTERM');
+      entry.process.kill('SIGTERM');
       this.runningProcesses.delete(ticketIdentifier);
     }
   }
@@ -299,11 +315,72 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
    * Stop all running processes
    */
   stopAll(): void {
-    for (const [ticketId, process] of this.runningProcesses.entries()) {
+    for (const [ticketId, entry] of this.runningProcesses.entries()) {
       logger.info({ ticketId }, 'Stopping planning process');
-      process.kill('SIGTERM');
+      entry.process.kill('SIGTERM');
     }
     this.runningProcesses.clear();
+  }
+
+  /**
+   * Get list of running agents for UI display
+   */
+  getRunningAgents(): Array<{ id: string; ticketId: string; recentOutput: string[]; startedAt: Date }> {
+    return Array.from(this.runningProcesses.entries()).map(([id, entry]) => ({
+      id,
+      ticketId: entry.ticketId,
+      recentOutput: entry.recentOutput,
+      startedAt: entry.startedAt,
+    }));
+  }
+
+  /**
+   * Append text to recent output buffer for UI display
+   */
+  private appendRecentOutput(entry: RunningProcess, text: string): void {
+    // Parse stream-json output to extract meaningful content
+    const lines = text.split('\n').filter(line => line.trim());
+
+    for (const line of lines) {
+      try {
+        const json = JSON.parse(line);
+        // Extract content from stream-json format
+        if (json.type === 'assistant' && json.message?.content) {
+          for (const block of json.message.content) {
+            if (block.type === 'text' && block.text) {
+              const textLines = block.text.split('\n').filter((l: string) => l.trim());
+              for (const textLine of textLines) {
+                const truncated = textLine.length > 80 ? textLine.slice(0, 77) + '...' : textLine;
+                entry.recentOutput.push(truncated);
+                if (entry.recentOutput.length > this.MAX_OUTPUT_LINES) {
+                  entry.recentOutput.shift();
+                }
+              }
+            }
+          }
+        } else if (json.type === 'content_block_delta' && json.delta?.text) {
+          // Handle streaming deltas
+          const deltaText = json.delta.text.trim();
+          if (deltaText) {
+            const truncated = deltaText.length > 80 ? deltaText.slice(0, 77) + '...' : deltaText;
+            entry.recentOutput.push(truncated);
+            if (entry.recentOutput.length > this.MAX_OUTPUT_LINES) {
+              entry.recentOutput.shift();
+            }
+          }
+        }
+      } catch {
+        // Not JSON, add raw line if it's meaningful
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith('{') && trimmed.length > 3) {
+          const truncated = trimmed.length > 80 ? trimmed.slice(0, 77) + '...' : trimmed;
+          entry.recentOutput.push(truncated);
+          if (entry.recentOutput.length > this.MAX_OUTPUT_LINES) {
+            entry.recentOutput.shift();
+          }
+        }
+      }
+    }
   }
 }
 

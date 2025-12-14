@@ -35,6 +35,8 @@ const getBadgeColor = (status: string): 'green' | 'yellow' | 'red' | 'blue' => {
     case 'working':
     case 'executing':
       return 'yellow';
+    case 'planning':
+      return 'blue';
     case 'completed':
       return 'green';
     case 'failed':
@@ -72,7 +74,7 @@ export const AgentPane: React.FC<AgentPaneProps> = ({ agents, available, total }
             {agents.map((agent) => {
               const runtime = formatDuration(Date.now() - agent.startedAt.getTime());
               const ticket = agent.ticketIdentifier || 'Unknown';
-              const isActive = agent.status === 'working' || agent.status === 'executing';
+              const isActive = agent.status === 'working' || agent.status === 'executing' || agent.status === 'planning';
 
               return (
                 <Box

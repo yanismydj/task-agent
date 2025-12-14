@@ -6,7 +6,7 @@ import { linearClient } from './linear/client.js';
 import { initializeAuth, getAuth } from './linear/auth.js';
 import { queueManager, queueProcessor, queueScheduler } from './queue/index.js';
 import { webhookServer, createWebhookHandlers } from './webhook/index.js';
-import { codeExecutorAgent } from './agents/impl/index.js';
+import { codeExecutorAgent, plannerAgent } from './agents/impl/index.js';
 import { claudeQueue } from './queue/claude-queue.js';
 
 async function checkOAuthAuthorization(): Promise<void> {
@@ -41,19 +41,34 @@ async function main() {
   if (isInteractiveMode) {
     // Set up agent state provider for the UI
     setAgentStateGetter(() => {
-      const runningAgents = codeExecutorAgent.getRunningAgents();
+      // Get running agents from both code executor and planner
+      const executorAgents = codeExecutorAgent.getRunningAgents();
+      const plannerAgents = plannerAgent.getRunningAgents();
+
       const processingCount = claudeQueue.getProcessingCount();
       const total = config.agents.maxCodeExecutors;
       const available = Math.max(0, total - processingCount);
 
-      return {
-        agents: runningAgents.map((agent) => ({
+      // Combine both agent types for display
+      const allAgents = [
+        ...executorAgents.map((agent) => ({
           id: agent.id,
           ticketIdentifier: agent.ticketId,
           status: 'executing',
           startedAt: agent.startedAt,
           recentOutput: agent.recentOutput,
         })),
+        ...plannerAgents.map((agent) => ({
+          id: `plan-${agent.id}`,
+          ticketIdentifier: agent.ticketId,
+          status: 'planning',
+          startedAt: agent.startedAt,
+          recentOutput: agent.recentOutput,
+        })),
+      ];
+
+      return {
+        agents: allAgents,
         available,
         total,
       };
