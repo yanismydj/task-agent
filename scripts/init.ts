@@ -51,7 +51,7 @@ function migrateLegacyFiles(): void {
   }
 }
 
-// ANSI colors
+// ANSI colors - using bright variants for better visibility across themes
 const colors = {
   reset: '\x1b[0m',
   bold: '\x1b[1m',
@@ -61,14 +61,23 @@ const colors = {
   blue: '\x1b[34m',
   red: '\x1b[31m',
   cyan: '\x1b[36m',
+  white: '\x1b[37m',
+
+  // Bright colors for better contrast in both dark and light themes
+  brightGreen: '\x1b[92m',
+  brightYellow: '\x1b[93m',
+  brightBlue: '\x1b[94m',
+  brightRed: '\x1b[91m',
+  brightCyan: '\x1b[96m',
+  brightWhite: '\x1b[97m',
 };
 
 const icons = {
-  check: `${colors.green}✓${colors.reset}`,
-  cross: `${colors.red}✗${colors.reset}`,
-  arrow: `${colors.blue}→${colors.reset}`,
-  warn: `${colors.yellow}!${colors.reset}`,
-  info: `${colors.cyan}i${colors.reset}`,
+  check: `${colors.brightGreen}✓${colors.reset}`,
+  cross: `${colors.brightRed}✗${colors.reset}`,
+  arrow: `${colors.brightBlue}→${colors.reset}`,
+  warn: `${colors.brightYellow}▲${colors.reset}`,
+  info: `${colors.brightCyan}●${colors.reset}`,
 };
 
 // Readline interface for prompts
@@ -83,20 +92,23 @@ function createReadline(): readline.Interface {
 
 async function prompt(question: string): Promise<string> {
   return new Promise((resolve) => {
-    rl.question(question, (answer) => {
+    // Enhanced prompt with bright blue arrow for better visibility
+    rl.question(`${colors.brightCyan}?${colors.reset} ${colors.bold}${question}${colors.reset} `, (answer) => {
       resolve(answer.trim());
     });
   });
 }
 
 async function promptWithDefault(question: string, defaultValue: string): Promise<string> {
-  const answer = await prompt(`${question} ${colors.dim}[${defaultValue}]${colors.reset}: `);
+  const formattedQuestion = `${question} ${colors.dim}[${defaultValue}]${colors.reset}:`;
+  const answer = await prompt(formattedQuestion);
   return answer || defaultValue;
 }
 
 async function promptYesNo(question: string, defaultYes = true): Promise<boolean> {
-  const hint = defaultYes ? '[Y/n]' : '[y/N]';
-  const answer = await prompt(`${question} ${colors.dim}${hint}${colors.reset}: `);
+  const hint = defaultYes ? `${colors.dim}[Y/n]${colors.reset}` : `${colors.dim}[y/N]${colors.reset}`;
+  const formattedQuestion = `${question} ${hint}:`;
+  const answer = await prompt(formattedQuestion);
   if (!answer) return defaultYes;
   return answer.toLowerCase().startsWith('y');
 }
@@ -106,7 +118,8 @@ async function promptSecret(question: string): Promise<string> {
     const stdin = process.stdin;
     const stdout = process.stdout;
 
-    stdout.write(question);
+    // Enhanced secret prompt with consistent styling
+    stdout.write(`${colors.brightCyan}?${colors.reset} ${colors.bold}${question}${colors.reset} `);
 
     // Try to hide input
     if (stdin.isTTY) {
