@@ -518,11 +518,18 @@ You'll be able to select your team in the next step.${colors.reset}
 // Trigger Labels Setup
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Label group configuration
+const LABEL_GROUP = {
+  name: 'task_agent',
+  color: '#6366f1', // Indigo - the parent group color
+  description: 'TaskAgent trigger labels',
+};
+
 const TRIGGER_LABELS = [
-  { name: 'ta:clarify', color: '#0ea5e9', description: 'Trigger TaskAgent to ask clarifying questions' },
-  { name: 'refine', color: '#8b5cf6', description: 'Trigger TaskAgent to refine/rewrite the description' },
-  { name: 'ta:work', color: '#22c55e', description: 'Trigger TaskAgent to start working on this issue' },
-  { name: 'ta:plan', color: '#f59e0b', description: 'Trigger TaskAgent to enter planning mode' },
+  { name: 'clarify', color: '#0ea5e9', description: 'Ask clarifying questions' },
+  { name: 'refine', color: '#8b5cf6', description: 'Refine/rewrite the description' },
+  { name: 'work', color: '#22c55e', description: 'Start working on this issue' },
+  { name: 'plan', color: '#f59e0b', description: 'Enter planning mode' },
 ];
 
 async function createTriggerLabels(env: Map<string, string>): Promise<void> {
@@ -544,22 +551,23 @@ async function createTriggerLabels(env: Map<string, string>): Promise<void> {
     printInfo('Labels will be created after OAuth authorization');
     console.log(`
 ${colors.dim}You can also create these labels manually in Linear:
-  - ta:clarify: Trigger TaskAgent to ask clarifying questions
-  - refine: Trigger TaskAgent to refine/rewrite the description
-  - ta:work: Trigger TaskAgent to start working on this issue
-  - ta:plan: Trigger TaskAgent to enter planning mode${colors.reset}
+  Create a label group called "${LABEL_GROUP.name}" with sub-labels:
+  - clarify: Ask clarifying questions
+  - refine: Refine/rewrite the description
+  - work: Start working on this issue
+  - plan: Enter planning mode${colors.reset}
 `);
     return;
   }
 
   console.log(`
-TaskAgent uses labels to trigger actions on issues.
-Creating the following trigger labels in your Linear team:
+TaskAgent uses a label group to trigger actions on issues.
+Creating the "${colors.cyan}${LABEL_GROUP.name}${colors.reset}" label group with sub-labels:
 
-  ${colors.cyan}ta:clarify${colors.reset} - Ask clarifying questions
-  ${colors.cyan}refine${colors.reset}     - Rewrite/improve the description
-  ${colors.cyan}ta:work${colors.reset}    - Start working on the issue
-  ${colors.cyan}ta:plan${colors.reset}    - Enter planning mode
+  ${colors.cyan}${LABEL_GROUP.name}/clarify${colors.reset} - Ask clarifying questions
+  ${colors.cyan}${LABEL_GROUP.name}/refine${colors.reset}  - Rewrite/improve the description
+  ${colors.cyan}${LABEL_GROUP.name}/work${colors.reset}    - Start working on the issue
+  ${colors.cyan}${LABEL_GROUP.name}/plan${colors.reset}    - Enter planning mode
 `);
 
   const create = await promptYesNo('Create trigger labels now?', true);
@@ -589,13 +597,50 @@ Creating the following trigger labels in your Linear team:
     // Get existing labels for the team
     const team = await client.team(teamId);
     const existingLabels = await team.labels();
-    const existingNames = new Set(existingLabels.nodes.map(l => l.name.toLowerCase()));
+    const existingByName = new Map(existingLabels.nodes.map(l => [l.name.toLowerCase(), l]));
 
     let created = 0;
     let skipped = 0;
 
+    // Step 1: Create or find the parent group label
+    let parentLabelId: string;
+    const existingParent = existingByName.get(LABEL_GROUP.name.toLowerCase());
+
+    if (existingParent) {
+      printInfo(`Label group "${LABEL_GROUP.name}" already exists`);
+      parentLabelId = existingParent.id;
+    } else {
+      try {
+        const parentResult = await client.createIssueLabel({
+          name: LABEL_GROUP.name,
+          color: LABEL_GROUP.color,
+          description: LABEL_GROUP.description,
+          teamId,
+        });
+        const parentLabel = await parentResult.issueLabel;
+        if (!parentLabel) {
+          throw new Error('Failed to get created parent label');
+        }
+        parentLabelId = parentLabel.id;
+        printSuccess(`Created label group "${LABEL_GROUP.name}"`);
+        created++;
+      } catch (error) {
+        printWarning(`Failed to create label group "${LABEL_GROUP.name}": ${error instanceof Error ? error.message : error}`);
+        return;
+      }
+    }
+
+    // Step 2: Create child labels under the parent group
     for (const label of TRIGGER_LABELS) {
-      if (existingNames.has(label.name.toLowerCase())) {
+      // Check if child already exists (Linear stores as "parent/child" or just "child" with parentId)
+      // We need to check both the full name and if a label with this name has this parent
+      const existingChild = existingLabels.nodes.find(l => {
+        const nameLower = l.name.toLowerCase();
+        return nameLower === label.name.toLowerCase() ||
+               nameLower === `${LABEL_GROUP.name.toLowerCase()}/${label.name.toLowerCase()}`;
+      });
+
+      if (existingChild) {
         printInfo(`Label "${label.name}" already exists`);
         skipped++;
       } else {
@@ -605,8 +650,9 @@ Creating the following trigger labels in your Linear team:
             color: label.color,
             description: label.description,
             teamId,
+            parentId: parentLabelId,
           });
-          printSuccess(`Created label "${label.name}"`);
+          printSuccess(`Created label "${LABEL_GROUP.name}/${label.name}"`);
           created++;
         } catch (error) {
           printWarning(`Failed to create label "${label.name}": ${error instanceof Error ? error.message : error}`);
@@ -627,11 +673,11 @@ Creating the following trigger labels in your Linear team:
 ${colors.dim}You can create these labels manually in Linear:
   Settings > Team Settings > Labels > New Label
 
-  Required labels:
-  - ta:clarify: Ask clarifying questions
+  Create a label group called "${LABEL_GROUP.name}" with sub-labels:
+  - clarify: Ask clarifying questions
   - refine: Rewrite/improve the description
-  - ta:work: Start working on the issue
-  - ta:plan: Enter planning mode${colors.reset}
+  - work: Start working on the issue
+  - plan: Enter planning mode${colors.reset}
 `);
   }
 }

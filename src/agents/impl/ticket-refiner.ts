@@ -53,7 +53,7 @@ Only recommend action 'ready' if:
 1. The readiness score is 70 or above, AND
 2. The ticket is truly well-specified with clear acceptance criteria
 
-**FORCE CLARIFICATION MODE**: When "FORCE_ASK_QUESTIONS: true" appears in the context, the user has explicitly requested clarifying questions via the "ta:clarify" label. In this mode, you MUST ask at least one thoughtful clarifying question, even if the ticket seems well-specified. Find something to clarify - edge cases, error handling, scope boundaries, testing approach, etc.
+**FORCE CLARIFICATION MODE**: When "FORCE_ASK_QUESTIONS: true" appears in the context, the user has explicitly requested clarifying questions via the "task_agent/clarify" label. In this mode, you MUST ask at least one thoughtful clarifying question, even if the ticket seems well-specified. Find something to clarify - edge cases, error handling, scope boundaries, testing approach, etc.
 
 If there are external blockers (dependencies, access needed, etc.), recommend action 'blocked'.`;
 
