@@ -144,9 +144,13 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
   // Handle help command (empty mention or unknown command)
   if (mention.command === 'help') {
     logger.info({ issueId, ticketIdentifier }, 'Responding with help text');
+    // Delete command comment first, then add help
+    try {
+      await linearClient.deleteComment(data.id);
+    } catch (error) {
+      logger.error({ commentId: data.id, error: error instanceof Error ? error.message : error }, 'Failed to delete command comment');
+    }
     await linearClient.addComment(issueId, getHelpText());
-    // Delete the command comment to clean up the ticket
-    await linearClient.deleteComment(data.id);
     return;
   }
 
@@ -167,6 +171,15 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
   // Clear any awaiting response state
   queueScheduler.clearAwaitingResponse(issueId);
 
+  // Delete the command comment FIRST to clean up the ticket
+  // (do this before enqueueing to ensure it happens within webhook timeout)
+  try {
+    await linearClient.deleteComment(data.id);
+    logger.debug({ commentId: data.id }, 'Deleted command comment');
+  } catch (error) {
+    logger.error({ commentId: data.id, error: error instanceof Error ? error.message : error }, 'Failed to delete command comment');
+  }
+
   // Enqueue the task
   linearQueue.enqueue({
     ticketId: issueId,
@@ -174,9 +187,6 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
     taskType,
     priority: 1, // User-triggered = highest priority
   });
-
-  // Delete the command comment to clean up the ticket
-  await linearClient.deleteComment(data.id);
 
   logger.info({ issueId, ticketIdentifier, command: mention.command, taskType }, 'Enqueued task from @taskAgent mention');
 }
