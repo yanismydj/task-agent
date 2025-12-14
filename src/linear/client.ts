@@ -961,6 +961,28 @@ export class LinearApiClient {
   }
 
   /**
+   * Set issue state to "In Review" (or equivalent review state)
+   */
+  async setIssueInReview(issueId: string): Promise<void> {
+    await this.withRetry(async (client) => {
+      const team = await client.team(this.teamId);
+      const states = await team.states();
+
+      // Find "In Review" state (case-insensitive match)
+      const reviewState = states.nodes.find(
+        (s) => s.name.toLowerCase() === 'in review'
+      );
+
+      if (reviewState) {
+        await client.updateIssue(issueId, { stateId: reviewState.id });
+        logger.info({ issueId, stateName: reviewState.name }, 'Set issue to In Review');
+      } else {
+        logger.warn({ issueId }, 'No "In Review" state found for team');
+      }
+    });
+  }
+
+  /**
    * Set issue state to "Done" (or equivalent completed state)
    */
   async setIssueDone(issueId: string): Promise<void> {

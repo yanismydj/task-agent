@@ -904,7 +904,8 @@ export class QueueProcessor {
 
     claudeQueue.complete(task.id, result.data.prUrl ?? undefined);
 
-    await linearClient.setIssueDone(task.ticketId);
+    // Move issue to "In Review" state (not "Done" - human needs to review the PR)
+    await linearClient.setIssueInReview(task.ticketId);
 
     if (task.agentSessionId) {
       const summary = result.data.prUrl
