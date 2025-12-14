@@ -79,9 +79,19 @@ async function main() {
   }
 
   // Start ngrok during initialization if webhooks are enabled
-  // This happens during the splash screen display (2 seconds)
+  // Update splash screen status to show ngrok initialization
   if (config.webhook.enabled) {
+    if (isInteractiveMode) {
+      terminalUI.setInitStatus('Starting ngrok tunnel...');
+    }
     await startNgrok(config.webhook.port);
+    if (isInteractiveMode) {
+      terminalUI.setInitStatus('Ngrok tunnel established');
+    }
+  }
+
+  if (isInteractiveMode) {
+    terminalUI.setInitStatus('Initializing system...');
   }
 
   logger.info('TaskAgent starting...');
@@ -213,6 +223,11 @@ async function main() {
     webhooksEnabled: config.webhook.enabled,
     webhookPort: config.webhook.enabled ? config.webhook.port : undefined,
   }, 'Daemon running with task queue system');
+
+  // Mark initialization as complete
+  if (isInteractiveMode) {
+    terminalUI.setInitStatus('complete');
+  }
 }
 
 main().catch(async (error) => {
