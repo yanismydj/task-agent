@@ -26,6 +26,7 @@ import type {
 import type { DescriptionConsolidatorInput } from '../agents/impl/description-consolidator.js';
 import type { PlannerInput } from '../agents/impl/planner.js';
 import type { PlanConsolidatorInput } from '../agents/impl/plan-consolidator.js';
+import type { SessionStatus } from '../sessions/storage.js';
 // descriptionApprovalManager is used by webhook handler for description rewrites
 // import { descriptionApprovalManager } from './description-approvals.js';
 
@@ -657,8 +658,77 @@ export class QueueProcessor {
       'Starting direct execution (@taskAgent work)'
     );
 
-    // Post acknowledgement
-    await linearClient.addComment(task.ticketId, 'Starting work on this ticket...');
+    // Check if this is a restart scenario (from inputData set by webhook handler)
+    const isRestart = task.inputData?.isRestart as boolean | undefined;
+    const previousSessionTimestamp = task.inputData?.previousSessionTimestamp as string | undefined;
+    const previousSessionStatus = task.inputData?.previousSessionStatus as SessionStatus | undefined;
+
+    // Build restart context if applicable
+    let restartContext: PromptGeneratorInput['restartContext'];
+    if (isRestart && previousSessionTimestamp) {
+      logger.info(
+        { ticketId: task.ticketIdentifier, previousStatus: previousSessionStatus },
+        'Building restart context for execution'
+      );
+
+      // Get all previous sessions
+      const previousSessions = sessionStorage.listAll(task.ticketId, 10);
+      const previousAttemptCount = previousSessions.length;
+
+      // Get comments since the last session
+      const allComments = await linearClient.getCommentsCached(task.ticketId);
+      const cutoffDate = new Date(previousSessionTimestamp);
+
+      // Filter to only new comments (after the previous session)
+      // Exclude TaskAgent comments - we only want user feedback
+      const newComments = allComments
+        .filter(c => new Date(c.createdAt) > cutoffDate)
+        .filter(c => !isTaskAgentComment(c.user))
+        .map(c => ({
+          body: c.body,
+          createdAt: c.createdAt,
+          isFromUser: true,
+        }));
+
+      logger.info(
+        { ticketId: task.ticketIdentifier, newCommentCount: newComments.length, previousAttemptCount },
+        'Retrieved restart context'
+      );
+
+      // Build a summary of what was attempted before
+      let summary = `Previous attempt (${previousSessionStatus}):\n`;
+      if (previousSessions.length > 0) {
+        const lastSession = previousSessions[0];
+        if (lastSession) {
+          if (lastSession.errorMessage) {
+            summary += `- Error: ${lastSession.errorMessage}\n`;
+          }
+          if (lastSession.prompt) {
+            // Extract first line of previous prompt as summary
+            const firstLine = lastSession.prompt.split('\n')[0];
+            if (firstLine) {
+              summary += `- Attempted: ${firstLine.slice(0, 200)}...\n`;
+            }
+          }
+        }
+      }
+
+      restartContext = {
+        previousAttemptCount,
+        previousStatus: (previousSessionStatus || 'failed') as 'failed' | 'completed' | 'interrupted',
+        newComments,
+        summary,
+      };
+
+      // Post acknowledgement mentioning restart
+      await linearClient.addComment(
+        task.ticketId,
+        `Restarting work on this ticket (attempt #${previousAttemptCount + 1})...\n\n${newComments.length > 0 ? `Addressing ${newComments.length} new comment(s) with feedback.` : 'Reviewing previous attempt to identify issues.'}`
+      );
+    } else {
+      // Not a restart - post standard acknowledgement
+      await linearClient.addComment(task.ticketId, 'Starting work on this ticket...');
+    }
 
     // Fetch attachments
     const attachments = await linearClient.getAttachments(task.ticketId);
@@ -682,6 +752,7 @@ export class QueueProcessor {
         constraints: {
           branchNaming: `task-agent/${ticket.identifier.toLowerCase()}`,
         },
+        restartContext, // Will be undefined if not a restart
       },
       context: { updatedAt: ticket.updatedAt },
     };
@@ -779,6 +850,63 @@ export class QueueProcessor {
       return;
     }
 
+    // Check if this is a restart scenario (from inputData set by webhook handler)
+    const isRestart = task.inputData?.isRestart as boolean | undefined;
+    const previousSessionTimestamp = task.inputData?.previousSessionTimestamp as string | undefined;
+    const previousSessionStatus = task.inputData?.previousSessionStatus as SessionStatus | undefined;
+
+    // Build restart context if applicable (same logic as handleExecuteDirect)
+    let restartContext: PromptGeneratorInput['restartContext'];
+    if (isRestart && previousSessionTimestamp) {
+      logger.info(
+        { ticketId: task.ticketIdentifier, previousStatus: previousSessionStatus },
+        'Building restart context for prompt generation (approval flow)'
+      );
+
+      const previousSessions = sessionStorage.listAll(task.ticketId, 10);
+      const previousAttemptCount = previousSessions.length;
+
+      const allComments = await linearClient.getCommentsCached(task.ticketId);
+      const cutoffDate = new Date(previousSessionTimestamp);
+
+      const newComments = allComments
+        .filter(c => new Date(c.createdAt) > cutoffDate)
+        .filter(c => !isTaskAgentComment(c.user))
+        .map(c => ({
+          body: c.body,
+          createdAt: c.createdAt,
+          isFromUser: true,
+        }));
+
+      let summary = `Previous attempt (${previousSessionStatus}):\n`;
+      if (previousSessions.length > 0) {
+        const lastSession = previousSessions[0];
+        if (lastSession) {
+          if (lastSession.errorMessage) {
+            summary += `- Error: ${lastSession.errorMessage}\n`;
+          }
+          if (lastSession.prompt) {
+            const firstLine = lastSession.prompt.split('\n')[0];
+            if (firstLine) {
+              summary += `- Attempted: ${firstLine.slice(0, 200)}...\n`;
+            }
+          }
+        }
+      }
+
+      restartContext = {
+        previousAttemptCount,
+        previousStatus: (previousSessionStatus || 'failed') as 'failed' | 'completed' | 'interrupted',
+        newComments,
+        summary,
+      };
+
+      logger.info(
+        { ticketId: task.ticketIdentifier, newCommentCount: newComments.length },
+        'Built restart context for approval flow'
+      );
+    }
+
     // Fetch attachments
     const attachments = await linearClient.getAttachments(task.ticketId);
     const attachmentsForPrompt = attachments.map(a => ({
@@ -800,6 +928,7 @@ export class QueueProcessor {
         constraints: {
           branchNaming: `task-agent/${ticket.identifier.toLowerCase()}`,
         },
+        restartContext, // Will be undefined if not a restart
       },
       context: { updatedAt: ticket.updatedAt },
     };

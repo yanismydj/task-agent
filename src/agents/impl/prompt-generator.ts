@@ -137,7 +137,7 @@ export class PromptGeneratorAgent extends BaseAgent<PromptGeneratorInput, Prompt
   }
 
   private buildContext(input: AgentInput<PromptGeneratorInput>): string {
-    const { ticket, codebaseInfo, constraints } = input.data;
+    const { ticket, codebaseInfo, constraints, restartContext } = input.data;
 
     let context = `# Generate a Claude Code Prompt
 
@@ -164,6 +164,31 @@ ${ticket.description}`;
         context += `- ${title}: ${attachment.url}\n`;
       }
       context += '\nNote: Include instructions in the prompt for Claude Code to examine these attachments if they contain relevant visual information (UI mockups, error screenshots, etc.).\n';
+    }
+
+    // Add restart context if this is a restart scenario
+    if (restartContext) {
+      context += `\n\n## IMPORTANT: This is a Restart Scenario\n`;
+      context += `This ticket has been worked on ${restartContext.previousAttemptCount} time(s) before.\n`;
+      context += `Previous attempt status: ${restartContext.previousStatus}\n\n`;
+      context += `### What Was Attempted Before\n`;
+      context += `${restartContext.summary}\n\n`;
+
+      if (restartContext.newComments.length > 0) {
+        context += `### New Feedback from User\n`;
+        context += `The user has provided the following feedback since the last attempt:\n\n`;
+
+        for (const comment of restartContext.newComments) {
+          if (comment.isFromUser) {
+            const timestamp = comment.createdAt.toISOString();
+            context += `**Comment (${timestamp}):**\n${comment.body}\n\n`;
+          }
+        }
+
+        context += `\n**CRITICAL:** You must address ALL of the user's feedback above. This is a restart, so the user is expecting you to fix issues or incorporate their new requirements.\n`;
+      } else {
+        context += `\n**Note:** No new comments were added since the last attempt. Review the previous work and determine what needs to be fixed or improved.\n`;
+      }
     }
 
     if (codebaseInfo) {
@@ -198,8 +223,17 @@ ${ticket.description}`;
     }
 
     context += `\n\n---\n
-Generate a comprehensive prompt for Claude Code that will help it successfully implement this ticket.
-The prompt should be actionable, specific, and include all necessary context.`;
+Generate a comprehensive prompt for Claude Code that will help it successfully implement this ticket.`;
+
+    if (restartContext) {
+      context += `\n\n**SPECIAL INSTRUCTIONS FOR RESTART:**
+- Clearly reference the previous attempt and what went wrong or needs improvement
+- Emphasize the user's new feedback and requirements
+- Make it clear this is a follow-up, not a fresh start
+- The prompt should combine: (1) original requirements, (2) previous attempt context, and (3) new user feedback`;
+    }
+
+    context += `\nThe prompt should be actionable, specific, and include all necessary context.`;
 
     return context;
   }

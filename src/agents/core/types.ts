@@ -135,6 +135,17 @@ export const PromptGeneratorInputSchema = z.object({
     testRequirements: z.string().optional(),
     branchNaming: z.string(),
   }),
+  // Optional restart context for when work is restarted after previous attempts
+  restartContext: z.object({
+    previousAttemptCount: z.number(),
+    previousStatus: z.enum(['failed', 'completed', 'interrupted']),
+    newComments: z.array(z.object({
+      body: z.string(),
+      createdAt: z.date(),
+      isFromUser: z.boolean(),
+    })),
+    summary: z.string(), // Summary of what was attempted before
+  }).optional(),
 });
 
 export type PromptGeneratorInput = z.infer<typeof PromptGeneratorInputSchema>;
