@@ -6,7 +6,7 @@ import { linearCache } from '../linear/cache.js';
 import { descriptionApprovalManager } from '../queue/description-approvals.js';
 import { linearClient } from '../linear/client.js';
 import { parseMention, getHelpText } from '../utils/mention-parser.js';
-import type { WebhookIssueData, WebhookCommentData, WebhookReactionData, WebhookHandlers } from './server.js';
+import type { WebhookIssueData, WebhookCommentData, WebhookReactionData, WebhookAgentSessionData, WebhookHandlers } from './server.js';
 
 const logger = createChildLogger({ module: 'webhook-handler' });
 
@@ -414,6 +414,69 @@ async function handleReactionCreate(data: WebhookReactionData): Promise<void> {
 }
 
 /**
+ * Handle agent session creation (delegation)
+ * When a user delegates an issue to TaskAgent, this triggers work automatically
+ */
+async function handleAgentSessionCreate(data: WebhookAgentSessionData): Promise<void> {
+  const issueId = data.issueId;
+  const issue = data.issue;
+
+  if (!issueId || !issue) {
+    logger.warn({ sessionId: data.id }, 'Agent session webhook missing issue data');
+    return;
+  }
+
+  // Only process issues from our team
+  if (issue.team && issue.team.id !== config.linear.teamId) {
+    logger.debug({ teamId: issue.team.id }, 'Ignoring agent session from different team');
+    return;
+  }
+
+  const ticketIdentifier = issue.identifier;
+
+  logger.info(
+    {
+      sessionId: data.id,
+      issueId,
+      ticketIdentifier,
+      creatorId: data.creatorId,
+      creatorName: data.creator?.name,
+    },
+    'Received agent session delegation - starting work'
+  );
+
+  // Cache the ticket data from webhook payload if available
+  if (issue.identifier && issue.title) {
+    linearCache.upsertTicket({
+      id: issueId,
+      identifier: issue.identifier,
+      title: issue.title,
+      description: issue.description || null,
+      priority: 0, // Not provided in webhook
+      state: { id: '', name: '', type: '' }, // Not provided in webhook
+      assignee: null,
+      labels: [],
+      createdAt: new Date(data.createdAt),
+      updatedAt: new Date(data.createdAt),
+      url: '',
+    });
+  }
+
+  // Clear any awaiting response state
+  queueScheduler.clearAwaitingResponse(issueId);
+
+  // Enqueue execution task - delegation means "do the work"
+  linearQueue.enqueue({
+    ticketId: issueId,
+    ticketIdentifier,
+    taskType: 'execute',
+    priority: 1, // Highest priority - user just delegated!
+  });
+
+  logger.info({ issueId, ticketIdentifier }, 'Enqueued execution from agent delegation');
+}
+
+/**
  * Create webhook handlers configured for TaskAgent
  * Each handler is wrapped with a timeout to ensure we respond to Linear within 5 seconds
  */
@@ -423,5 +486,6 @@ export function createWebhookHandlers(): WebhookHandlers {
     onCommentCreate: (data) => withTimeout(() => handleCommentCreate(data), 'handleCommentCreate'),
     onCommentUpdate: (data) => withTimeout(() => handleCommentUpdate(data), 'handleCommentUpdate'),
     onReactionCreate: (data) => withTimeout(() => handleReactionCreate(data), 'handleReactionCreate'),
+    onAgentSessionCreate: (data) => withTimeout(() => handleAgentSessionCreate(data), 'handleAgentSessionCreate'),
   };
 }

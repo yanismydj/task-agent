@@ -13,7 +13,7 @@ const logger = createChildLogger({ module: 'webhook-server' });
 
 // Linear webhook event types we care about
 type WebhookAction = 'create' | 'update' | 'remove';
-type WebhookType = 'Issue' | 'Comment' | 'IssueLabel' | 'Project' | 'Reaction';
+type WebhookType = 'Issue' | 'Comment' | 'IssueLabel' | 'Project' | 'Reaction' | 'AgentSession';
 
 export interface LinearWebhookPayload {
   action: WebhookAction;
@@ -63,12 +63,31 @@ export interface WebhookReactionData {
   createdAt: string;
 }
 
+// Agent session data from webhook (triggered by delegation)
+export interface WebhookAgentSessionData {
+  id: string;
+  issueId?: string;
+  issue?: {
+    id: string;
+    identifier: string;
+    title: string;
+    description?: string;
+    team?: { id: string; key: string };
+  };
+  commentId?: string;
+  creatorId?: string;
+  creator?: { id: string; name: string };
+  appUserId: string; // The agent's user ID
+  createdAt: string;
+}
+
 export interface WebhookHandlers {
   onIssueUpdate?: (data: WebhookIssueData) => Promise<void>;
   onCommentCreate?: (data: WebhookCommentData) => Promise<void>;
   onCommentUpdate?: (data: WebhookCommentData) => Promise<void>;
   onIssueLabelChange?: (data: Record<string, unknown>) => Promise<void>;
   onReactionCreate?: (data: WebhookReactionData) => Promise<void>;
+  onAgentSessionCreate?: (data: WebhookAgentSessionData) => Promise<void>;
 }
 
 export class WebhookServer {
@@ -282,6 +301,12 @@ export class WebhookServer {
         case 'Reaction':
           if (action === 'create' && this.handlers.onReactionCreate) {
             await this.handlers.onReactionCreate(data as unknown as WebhookReactionData);
+          }
+          break;
+
+        case 'AgentSession':
+          if (action === 'create' && this.handlers.onAgentSessionCreate) {
+            await this.handlers.onAgentSessionCreate(data as unknown as WebhookAgentSessionData);
           }
           break;
 
