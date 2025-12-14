@@ -8,6 +8,7 @@ import { queueManager, queueProcessor, queueScheduler } from './queue/index.js';
 import { webhookServer, createWebhookHandlers } from './webhook/index.js';
 import { codeExecutorAgent, plannerAgent } from './agents/impl/index.js';
 import { claudeQueue } from './queue/claude-queue.js';
+import { startNgrok, stopNgrok } from './utils/ngrok.js';
 
 async function checkOAuthAuthorization(): Promise<void> {
   if (config.linear.auth.mode !== 'oauth') {
@@ -77,6 +78,12 @@ async function main() {
     terminalUI.start();
   }
 
+  // Start ngrok during initialization if webhooks are enabled
+  // This happens during the splash screen display (2 seconds)
+  if (config.webhook.enabled) {
+    await startNgrok(config.webhook.port);
+  }
+
   logger.info('TaskAgent starting...');
 
   // Initialize the queue system
@@ -129,6 +136,11 @@ async function main() {
     logger.info('Shutting down...');
     clearInterval(heartbeatInterval);
     clearInterval(healthCheckInterval);
+
+    // Stop ngrok tunnel
+    if (config.webhook.enabled) {
+      stopNgrok();
+    }
 
     // Stop webhook server
     if (config.webhook.enabled) {
