@@ -3,6 +3,12 @@ import { config as loadEnv } from 'dotenv';
 
 loadEnv();
 
+// UUID validation helper
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isValidUuid(value: string | undefined): value is string {
+  return value !== undefined && UUID_REGEX.test(value);
+}
+
 // Linear auth can be either OAuth (preferred for agents) or API key (legacy)
 const LinearAuthSchema = z.discriminatedUnion('mode', [
   z.object({
@@ -89,7 +95,7 @@ function loadConfig(): Config {
     linear: {
       auth: linearAuth,
       teamId: process.env['LINEAR_TEAM_ID'] ?? '',
-      projectId: process.env['LINEAR_PROJECT_ID'] || undefined,
+      projectId: isValidUuid(process.env['LINEAR_PROJECT_ID']) ? process.env['LINEAR_PROJECT_ID'] : undefined,
       webhookSecret: process.env['LINEAR_WEBHOOK_SECRET'] || undefined,
     },
     webhook: {
