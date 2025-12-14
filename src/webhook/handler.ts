@@ -10,6 +10,14 @@ import type { WebhookIssueData, WebhookCommentData, WebhookReactionData, Webhook
 
 const logger = createChildLogger({ module: 'webhook-handler' });
 
+// Trigger labels - adding these labels to an issue triggers the corresponding action
+// Labels are matched case-insensitively
+const TRIGGER_LABELS: Record<string, 'refine' | 'consolidate' | 'execute'> = {
+  'clarify': 'refine',        // Triggers TicketRefinerAgent (clarifying questions)
+  'refine': 'consolidate',    // Triggers DescriptionConsolidatorAgent (rewrite description)
+  'work': 'execute',          // Triggers CodeExecutorAgent (Claude Code)
+};
+
 // Helper to check if a comment is from TaskAgent (using user ID)
 function isCommentFromTaskAgent(userId?: string): boolean {
   if (!userId) return false;
@@ -92,10 +100,52 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
     return;
   }
 
-  // MENTION-TRIGGERED MODE: Do NOT auto-evaluate issues
-  // Users must use @taskAgent commands in comments to trigger actions
-  // This handler only caches ticket data and handles unblocking
-  logger.debug({ issueId: data.identifier }, 'Issue updated - cached (mention-triggered mode, no auto-evaluation)');
+  // Check for trigger labels (clarify, refine, work)
+  const labels = data.labels || [];
+  for (const label of labels) {
+    const labelNameLower = label.name.toLowerCase();
+    const taskType = TRIGGER_LABELS[labelNameLower];
+
+    if (taskType) {
+      logger.info(
+        { issueId: data.identifier, label: label.name, taskType },
+        'Detected trigger label - enqueueing task'
+      );
+
+      // Remove the trigger label first to prevent re-triggering
+      const remainingLabelIds = labels
+        .filter((l) => l.id !== label.id)
+        .map((l) => l.id);
+
+      try {
+        await linearClient.updateTicket(data.id, { labelIds: remainingLabelIds });
+        logger.debug({ issueId: data.identifier, label: label.name }, 'Removed trigger label');
+      } catch (error) {
+        logger.error(
+          { issueId: data.identifier, label: label.name, error: error instanceof Error ? error.message : error },
+          'Failed to remove trigger label'
+        );
+      }
+
+      // Clear any awaiting response state
+      queueScheduler.clearAwaitingResponse(data.id);
+
+      // Enqueue the task
+      linearQueue.enqueue({
+        ticketId: data.id,
+        ticketIdentifier: data.identifier,
+        taskType,
+        priority: 1, // User-triggered = highest priority
+      });
+
+      logger.info({ issueId: data.identifier, taskType }, 'Enqueued task from trigger label');
+
+      // Only process one trigger label per update
+      return;
+    }
+  }
+
+  logger.debug({ issueId: data.identifier }, 'Issue updated - cached');
 }
 
 /**
