@@ -12,6 +12,7 @@ import { LinearTeamStep } from './steps/LinearTeamStep.js';
 import { AnthropicStep } from './steps/AnthropicStep.js';
 import { GitHubStep } from './steps/GitHubStep.js';
 import { ConcurrencyStep } from './steps/ConcurrencyStep.js';
+import { LabelsStep } from './steps/LabelsStep.js';
 import { CompleteStep } from './steps/CompleteStep.js';
 import { loadEnvFile } from './utils/env.js';
 
@@ -60,7 +61,7 @@ function loadInitialState(): SetupState {
   };
 }
 
-const TOTAL_STEPS = 11;
+const TOTAL_STEPS = 12;
 
 type Step =
   | 'welcome'
@@ -74,6 +75,7 @@ type Step =
   | 'anthropic'
   | 'github'
   | 'concurrency'
+  | 'labels'
   | 'complete';
 
 const STEP_ORDER: Step[] = [
@@ -88,6 +90,7 @@ const STEP_ORDER: Step[] = [
   'anthropic',
   'github',
   'concurrency',
+  'labels',
   'complete',
 ];
 
@@ -296,10 +299,27 @@ export const App: React.FC = () => {
         </StepContainer>
       );
 
-    case 'complete':
+    case 'labels':
       return (
         <StepContainer
           step={11}
+          totalSteps={TOTAL_STEPS}
+          title="Linear Labels"
+          description="Creating TaskAgent trigger labels in your Linear team"
+        >
+          <LabelsStep
+            clientId={state.linearClientId}
+            clientSecret={state.linearClientSecret}
+            teamId={state.linearTeamId}
+            onComplete={goToNextStep}
+          />
+        </StepContainer>
+      );
+
+    case 'complete':
+      return (
+        <StepContainer
+          step={12}
           totalSteps={TOTAL_STEPS}
           title="Setup Complete"
         >
