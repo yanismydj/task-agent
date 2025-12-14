@@ -71,11 +71,10 @@ export class LinearAuth {
         this.tokenData = JSON.parse(data) as TokenData;
         logger.debug('Loaded stored OAuth token');
 
-        // Security warning: token is stored in plaintext
-        logger.warn(
-          { tokenPath: this.tokenStorePath },
-          'OAuth token stored in plaintext. Ensure this file is not committed to version control and has restricted permissions (chmod 600).'
-        );
+        // Check file permissions (only on Unix-like systems)
+        if (process.platform !== 'win32') {
+          this.verifyTokenFilePermissions();
+        }
       }
     } catch (error) {
       logger.warn({ error }, 'Failed to load stored token');
@@ -86,9 +85,49 @@ export class LinearAuth {
   private saveToken(): void {
     try {
       fs.writeFileSync(this.tokenStorePath, JSON.stringify(this.tokenData, null, 2));
+
+      // Set restrictive file permissions (owner read/write only) on Unix-like systems
+      if (process.platform !== 'win32') {
+        try {
+          fs.chmodSync(this.tokenStorePath, 0o600);
+          logger.debug('Set token file permissions to 600 (owner read/write only)');
+        } catch (chmodError) {
+          logger.warn({ error: chmodError }, 'Failed to set secure file permissions on token file');
+        }
+      }
+
       logger.debug('Saved OAuth token to storage');
     } catch (error) {
       logger.error({ error }, 'Failed to save token');
+    }
+  }
+
+  private verifyTokenFilePermissions(): void {
+    try {
+      const stats = fs.statSync(this.tokenStorePath);
+      const mode = stats.mode & 0o777; // Extract permission bits
+
+      // Check if permissions are too permissive (anything other than 600)
+      if (mode !== 0o600) {
+        logger.warn(
+          {
+            tokenPath: this.tokenStorePath,
+            currentPermissions: mode.toString(8),
+            recommendedPermissions: '600'
+          },
+          'Token file has permissive permissions. Run: chmod 600 ' + this.tokenStorePath
+        );
+
+        // Attempt to fix permissions automatically
+        try {
+          fs.chmodSync(this.tokenStorePath, 0o600);
+          logger.info('Automatically corrected token file permissions to 600');
+        } catch (chmodError) {
+          logger.warn({ error: chmodError }, 'Failed to automatically correct file permissions');
+        }
+      }
+    } catch (error) {
+      logger.debug({ error }, 'Could not verify token file permissions');
     }
   }
 
