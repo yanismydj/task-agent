@@ -176,6 +176,7 @@ export const App: React.FC = () => {
           <LinearOAuthStep
             workspaceSlug={state.workspaceSlug}
             ngrokUrl={state.ngrokUrl}
+            currentWebhookSecret={state.linearWebhookSecret}
             onComplete={(webhookSecret) => {
               updateState({ linearWebhookSecret: webhookSecret });
               goToNextStep();
@@ -192,6 +193,8 @@ export const App: React.FC = () => {
           title="Linear Client Credentials"
         >
           <LinearCredentialsStep
+            currentClientId={state.linearClientId}
+            currentClientSecret={state.linearClientSecret}
             onComplete={(clientId, clientSecret) => {
               updateState({
                 linearClientId: clientId,

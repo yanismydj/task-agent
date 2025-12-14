@@ -5,15 +5,18 @@ import { PasswordInput } from '@inkjs/ui';
 interface LinearOAuthStepProps {
   workspaceSlug: string;
   ngrokUrl: string | null;
+  currentWebhookSecret: string;
   onComplete: (webhookSecret: string) => void;
 }
 
 export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
   workspaceSlug,
   ngrokUrl,
+  currentWebhookSecret,
   onComplete,
 }) => {
   const [error, setError] = useState<string | null>(null);
+  const [webhookSecret, setWebhookSecret] = useState(currentWebhookSecret);
 
   const oauthCallbackUrl = ngrokUrl
     ? `${ngrokUrl}/oauth/callback`
@@ -69,7 +72,11 @@ export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
       <Box marginTop={2} flexDirection="column">
         <Text>6. Enter the <Text bold>Webhook signing secret</Text> from the webhook section:</Text>
         <Box marginTop={1}>
-          <PasswordInput placeholder="webhook-signing-secret" onSubmit={handleWebhookSecretSubmit} />
+          <PasswordInput
+            defaultValue={currentWebhookSecret}
+            placeholder="webhook-signing-secret"
+            onSubmit={handleWebhookSecretSubmit}
+          />
         </Box>
         {error && (
           <Box marginTop={1}>

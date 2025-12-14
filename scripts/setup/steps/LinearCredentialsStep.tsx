@@ -3,16 +3,20 @@ import { Box, Text } from 'ink';
 import { TextInput, PasswordInput } from '@inkjs/ui';
 
 interface LinearCredentialsStepProps {
+  currentClientId: string;
+  currentClientSecret: string;
   onComplete: (clientId: string, clientSecret: string) => void;
 }
 
 type InputField = 'clientId' | 'clientSecret';
 
 export const LinearCredentialsStep: React.FC<LinearCredentialsStepProps> = ({
+  currentClientId,
+  currentClientSecret,
   onComplete,
 }) => {
   const [currentField, setCurrentField] = useState<InputField>('clientId');
-  const [clientId, setClientId] = useState('');
+  const [clientId, setClientId] = useState(currentClientId);
   const [error, setError] = useState<string | null>(null);
 
   const handleClientIdSubmit = (value: string) => {
@@ -44,7 +48,11 @@ export const LinearCredentialsStep: React.FC<LinearCredentialsStepProps> = ({
           <Text>Enter the Client ID:</Text>
         </Box>
         <Box marginTop={1}>
-          <TextInput placeholder="client-id" onSubmit={handleClientIdSubmit} />
+          <TextInput
+            defaultValue={currentClientId}
+            placeholder="client-id"
+            onSubmit={handleClientIdSubmit}
+          />
         </Box>
         {error && (
           <Box marginTop={1}>
@@ -60,7 +68,11 @@ export const LinearCredentialsStep: React.FC<LinearCredentialsStepProps> = ({
       <Box flexDirection="column">
         <Text>Enter the Client Secret:</Text>
         <Box marginTop={1}>
-          <PasswordInput placeholder="client-secret" onSubmit={handleClientSecretSubmit} />
+          <PasswordInput
+            defaultValue={currentClientSecret}
+            placeholder="client-secret"
+            onSubmit={handleClientSecretSubmit}
+          />
         </Box>
         {error && (
           <Box marginTop={1}>
