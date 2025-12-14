@@ -10,16 +10,14 @@ import type { WebhookIssueData, WebhookCommentData, WebhookReactionData, Webhook
 
 const logger = createChildLogger({ module: 'webhook-handler' });
 
-// Label group for TaskAgent triggers
-const LABEL_GROUP = 'task_agent';
-
-// Trigger labels - adding these labels to an issue triggers the corresponding action
-// Labels are matched case-insensitively, using grouped format (task_agent/*)
+// Label group for TaskAgent triggers (task_agent/*)
+// Note: Webhook payload only includes label name, not parent, so we match just the name
+// These labels should be children of the "task_agent" label group in Linear
 const TRIGGER_LABELS: Record<string, 'refine' | 'consolidate' | 'execute' | 'plan'> = {
-  [`${LABEL_GROUP}/clarify`]: 'refine',     // Triggers TicketRefinerAgent (clarifying questions)
-  [`${LABEL_GROUP}/refine`]: 'consolidate', // Triggers DescriptionConsolidatorAgent (rewrite description)
-  [`${LABEL_GROUP}/work`]: 'execute',       // Triggers CodeExecutorAgent (Claude Code)
-  [`${LABEL_GROUP}/plan`]: 'plan',          // Triggers PlannerAgent (Claude Code in plan mode)
+  'clarify': 'refine',     // Triggers TicketRefinerAgent (clarifying questions)
+  'refine': 'consolidate', // Triggers DescriptionConsolidatorAgent (rewrite description)
+  'work': 'execute',       // Triggers CodeExecutorAgent (Claude Code)
+  'plan': 'plan',          // Triggers PlannerAgent (Claude Code in plan mode)
 };
 
 // Helper to check if a comment is from TaskAgent (using user ID)
@@ -136,7 +134,7 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
 
       // Enqueue the task with appropriate inputData
       // For clarify label, pass forceAskQuestions to ensure questions are asked
-      const isClarifyLabel = labelNameLower === `${LABEL_GROUP}/clarify`;
+      const isClarifyLabel = labelNameLower === 'clarify';
       const inputData = isClarifyLabel ? { forceAskQuestions: true } : undefined;
 
       linearQueue.enqueue({
