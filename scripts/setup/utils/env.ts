@@ -50,12 +50,34 @@ export function saveEnvFile(env: Map<string, string>): void {
   // Read the template to preserve comments and structure
   let content = fs.readFileSync(ENV_EXAMPLE_PATH, 'utf-8');
 
-  // Replace values in template
+  // Track which keys we've set
+  const setKeys = new Set<string>();
+
+  // Replace values in template (including commented-out keys)
   for (const [key, value] of env) {
-    // Match both KEY=value and KEY= patterns
-    const regex = new RegExp(`^(${key})=.*$`, 'm');
-    if (content.match(regex)) {
-      content = content.replace(regex, `$1=${value}`);
+    // Match uncommented KEY=value patterns
+    const uncommentedRegex = new RegExp(`^(${key})=.*$`, 'm');
+    if (content.match(uncommentedRegex)) {
+      content = content.replace(uncommentedRegex, `$1=${value}`);
+      setKeys.add(key);
+      continue;
+    }
+
+    // Match commented # KEY=value patterns and uncomment them
+    const commentedRegex = new RegExp(`^#\\s*(${key})=.*$`, 'm');
+    if (content.match(commentedRegex)) {
+      content = content.replace(commentedRegex, `$1=${value}`);
+      setKeys.add(key);
+      continue;
+    }
+  }
+
+  // Append any keys that weren't in the template at all
+  const missingKeys = [...env.entries()].filter(([key]) => !setKeys.has(key));
+  if (missingKeys.length > 0) {
+    content += '\n# Additional configuration\n';
+    for (const [key, value] of missingKeys) {
+      content += `${key}=${value}\n`;
     }
   }
 
