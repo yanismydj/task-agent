@@ -415,8 +415,7 @@ ${colors.bold}Creating a Linear OAuth Application:${colors.reset}
 
   6. Click "${colors.bold}Create${colors.reset}" and copy the ${colors.bold}Client ID${colors.reset} and ${colors.bold}Client Secret${colors.reset}
 
-${colors.yellow}IMPORTANT:${colors.reset} ${colors.dim}Keep ngrok running while TaskAgent is active.
-If you restart ngrok and get a new URL, update both the callback URL and webhook URL in Linear.${colors.reset}
+${colors.dim}Note: TaskAgent manages ngrok automatically when the daemon is running.${colors.reset}
 `);
 
   await waitForEnter('Press Enter after creating the application...');
