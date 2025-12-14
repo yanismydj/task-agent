@@ -16,17 +16,37 @@ let ngrokInstance: NgrokInfo = {
 /**
  * Start ngrok tunnel for webhook server
  * Returns a promise that resolves when ngrok URL is captured
+ * @param port - The local port to forward to
+ * @param customDomain - Optional custom ngrok domain (e.g., "yan-od.ngrok.dev")
  */
-export async function startNgrok(port: number): Promise<string | null> {
+export async function startNgrok(port: number, customDomain?: string): Promise<string | null> {
   return new Promise((resolve) => {
     // Don't log during startup - let the caller handle status updates
     // This prevents console output before the splash screen is ready
 
-    const proc = spawn('ngrok', ['http', String(port), '--log=stdout'], {
+    const args = customDomain
+      ? ['http', `--url=${customDomain}`, String(port), '--log=stdout']
+      : ['http', String(port), '--log=stdout'];
+
+    const proc = spawn('ngrok', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     let resolved = false;
+
+    // For custom domains, we know the URL immediately
+    // Just wait briefly for ngrok to start, then resolve
+    if (customDomain) {
+      const url = `https://${customDomain}`;
+      setTimeout(() => {
+        if (!resolved) {
+          ngrokInstance.url = url;
+          resolved = true;
+          resolve(url);
+        }
+      }, 2000); // Give ngrok 2 seconds to start
+    }
+
     const timeout = setTimeout(() => {
       if (!resolved) {
         // Only log warning after startup is complete
@@ -34,7 +54,7 @@ export async function startNgrok(port: number): Promise<string | null> {
           logger.warn('Ngrok URL not found within timeout, continuing without URL');
         }, 100);
         resolved = true;
-        resolve(null);
+        resolve(customDomain ? `https://${customDomain}` : null);
       }
     }, 5000); // 5 second timeout
 
