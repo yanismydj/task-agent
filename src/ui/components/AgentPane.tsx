@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, useStdout } from 'ink';
 import { Spinner, Badge } from '@inkjs/ui';
 
 export interface AgentInfo {
@@ -47,6 +47,19 @@ const getBadgeColor = (status: string): 'green' | 'yellow' | 'red' | 'blue' => {
 };
 
 export const AgentPane: React.FC<AgentPaneProps> = ({ agents, available, total }) => {
+  const { stdout } = useStdout();
+
+  // Calculate max output width (65% of terminal - padding/borders/prefix)
+  const terminalWidth = stdout?.columns ?? 120;
+  const paneWidth = Math.floor(terminalWidth * 0.65);
+  // Account for: border(2) + paddingX(2) + inner paddingLeft(2) + prefix "│ "(2) + inner border/margins(~8)
+  const maxOutputWidth = Math.max(40, paneWidth - 16);
+
+  const truncate = (text: string, maxLen: number): string => {
+    if (text.length <= maxLen) return text;
+    return text.slice(0, maxLen - 1) + '…';
+  };
+
   return (
     <Box flexDirection="column" height="100%" paddingX={1}>
       {/* Header */}
@@ -103,7 +116,7 @@ export const AgentPane: React.FC<AgentPaneProps> = ({ agents, available, total }
                       agent.recentOutput.slice(-3).map((line, idx) => (
                         <Box key={idx}>
                           <Text color="gray">│ </Text>
-                          <Text>{line.slice(0, 60)}</Text>
+                          <Text>{truncate(line, maxOutputWidth)}</Text>
                         </Box>
                       ))
                     ) : (

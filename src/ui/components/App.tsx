@@ -84,7 +84,7 @@ export const App: React.FC<AppProps> = ({ getLogs, getAgentState, getRateLimitRe
       <Box flexGrow={1} height={paneHeight}>
         {/* Left pane: TaskAgent logs */}
         <Box
-          width="50%"
+          width="35%"
           borderStyle="bold"
           borderColor="gray"
           flexDirection="column"
@@ -94,7 +94,7 @@ export const App: React.FC<AppProps> = ({ getLogs, getAgentState, getRateLimitRe
 
         {/* Right pane: Claude Code output */}
         <Box
-          width="50%"
+          width="65%"
           borderStyle="bold"
           borderColor="gray"
           flexDirection="column"

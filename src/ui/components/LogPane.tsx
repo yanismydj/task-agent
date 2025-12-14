@@ -49,9 +49,9 @@ export const LogPane: React.FC<LogPaneProps> = ({ title, logs, maxLines = 15 }) 
   const { stdout } = useStdout();
   const displayLogs = logs.slice(-maxLines);
 
-  // Calculate max message width (50% of terminal - padding/borders/timestamp/icon)
+  // Calculate max message width (35% of terminal - padding/borders/timestamp/icon)
   const terminalWidth = stdout?.columns ?? 120;
-  const paneWidth = Math.floor(terminalWidth * 0.5);
+  const paneWidth = Math.floor(terminalWidth * 0.35);
   // Account for: border(2) + paddingX(2) + time(8) + spaces(3) + icon(1) + module(~15)
   const maxMessageWidth = Math.max(20, paneWidth - 35);
 
