@@ -384,33 +384,28 @@ async function setupLinearOAuth(env: Map<string, string>, ngrokUrl: string | nul
   console.log(`
 ${colors.bold}Creating a Linear OAuth Application:${colors.reset}
 
-  1. Go to: ${colors.cyan}https://linear.app/settings/api/applications${colors.reset}
+  1. Go to: ${colors.cyan}https://linear.app/<your-workspace>/settings/api/applications/new${colors.reset}
+     ${colors.dim}(Replace <your-workspace> with your Linear workspace slug)${colors.reset}
 
-  2. Click "${colors.bold}Create new application${colors.reset}"
+  2. Fill in the application details:
+     ${colors.bold}Application name:${colors.reset} TaskAgent (or your preferred name)
+     ${colors.bold}Developer name:${colors.reset} Your name or team name
+     ${colors.bold}Developer URL:${colors.reset} ${colors.dim}(optional)${colors.reset}
 
-  3. Fill in the application details:
-     ${colors.bold}Name:${colors.reset} TaskAgent (or your preferred name)
-     ${colors.bold}Description:${colors.reset} AI coding agent assistant
-     ${colors.bold}Redirect URL:${colors.reset} ${colors.cyan}${redirectUrl}${colors.reset}
+  3. ${colors.bold}Callback URLs:${colors.reset}
+     Add this URL: ${colors.cyan}${redirectUrl}${colors.reset}
 
-     ${colors.bold}IMPORTANT - Actor field:${colors.reset}
-     ${colors.bold}Select "Application"${colors.reset} to create a dedicated bot user for TaskAgent.
+  4. ${colors.bold}Actor (IMPORTANT):${colors.reset}
+     Select ${colors.bold}"Application"${colors.reset} to create a dedicated bot user for TaskAgent.
      This makes TaskAgent appear as a separate user in Linear, not as you.
 
-  4. ${colors.bold}Permissions:${colors.reset}
-     The default permissions should be sufficient. TaskAgent needs:
-     - Read access to issues and comments
-     - Write access to create issues and comments
-     - Ability to be assigned to issues
-
-  5. Click "${colors.bold}Create${colors.reset}" and copy the Client ID and Client Secret
+  5. Click "${colors.bold}Create${colors.reset}" and copy the ${colors.bold}Client ID${colors.reset} and ${colors.bold}Client Secret${colors.reset}
 
 ${ngrokUrl ? `
-${colors.dim}Note: Using ngrok URL for redirect. If ngrok restarts, you'll need to update
-the redirect URL in Linear's application settings.${colors.reset}
+${colors.dim}Note: Using ngrok URL for OAuth callback. If ngrok restarts with a new URL,
+you'll need to update the callback URL in your Linear app settings.${colors.reset}
 ` : `
-${colors.yellow}⚠ Warning:${colors.reset} ${colors.dim}Using localhost redirect URL. This won't work on remote/cloud machines.
-Consider enabling webhooks for ngrok-based redirect URLs.${colors.reset}
+${colors.yellow}⚠ Warning:${colors.reset} ${colors.dim}Using localhost callback URL. This won't work on remote/cloud machines.${colors.reset}
 `}
 `);
 
@@ -1618,29 +1613,32 @@ ${colors.bold}Linear Webhook Configuration:${colors.reset}
 
 After completing this setup, configure the webhook in Linear:
 
-  1. Go to: ${colors.cyan}https://linear.app/settings/api/webhooks${colors.reset}
+  1. Go to: ${colors.cyan}https://linear.app/<your-workspace>/settings/api/webhooks${colors.reset}
+     ${colors.dim}(Replace <your-workspace> with your Linear workspace slug)${colors.reset}
 
-  2. Click "${colors.bold}Create webhook${colors.reset}"
+  2. Click "${colors.bold}New webhook${colors.reset}"
 
   3. Fill in the webhook details:
      ${colors.bold}Label:${colors.reset} TaskAgent
-     ${colors.bold}Webhook URL:${colors.reset} ${colors.cyan}${ngrokUrl ? `${ngrokUrl}/webhook` : '<ngrok-url>/webhook'}${colors.reset}
-     ${colors.bold}Enable webhook:${colors.reset} ✓ Check this box
+     ${colors.bold}URL:${colors.reset} ${colors.cyan}${ngrokUrl ? `${ngrokUrl}/webhook` : '<ngrok-url>/webhook'}${colors.reset}
+     ${colors.bold}Signing secret:${colors.reset} ${colors.cyan}${webhookSecret}${colors.reset}
+     ${colors.dim}(This secret is already saved to your .env file)${colors.reset}
 
-  4. ${colors.bold}Webhook signing secret:${colors.reset}
-     Paste this secret (already saved to .env):
-     ${colors.cyan}${webhookSecret}${colors.reset}
+  4. ${colors.bold}Data change events${colors.reset} - Check these boxes:
 
-  5. ${colors.bold}Data change events${colors.reset} - Select these events:
-     ${colors.bold}Issue:${colors.reset}
-       ☑ Issue created
-       ☑ Issue updated
-       ☑ Issue removed
-     ${colors.bold}Comment:${colors.reset}
-       ☑ Comment created
-       ☑ Comment updated
+     ${colors.bold}Issues:${colors.reset}
+       ☑ Create    ☑ Update    ☑ Remove
 
-  6. Click "${colors.bold}Create webhook${colors.reset}"
+     ${colors.bold}Issue labels:${colors.reset}
+       ☑ Create    ☑ Update    ☑ Remove
+
+     ${colors.bold}Comments:${colors.reset}
+       ☑ Create    ☑ Update
+
+     ${colors.bold}Reactions:${colors.reset}
+       ☑ Create    ☑ Remove
+
+  5. Click "${colors.bold}Create webhook${colors.reset}"
 
 ${colors.yellow}IMPORTANT:${colors.reset} ${colors.dim}Keep ngrok running while TaskAgent is active.
 If you restart ngrok and get a new URL, update the webhook URL in Linear.${colors.reset}
