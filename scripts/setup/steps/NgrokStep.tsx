@@ -1,236 +1,211 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
-import { Spinner, TextInput, StatusMessage } from '@inkjs/ui';
-import { execSync, spawn } from 'node:child_process';
+import { Spinner, TextInput, Select, StatusMessage } from '@inkjs/ui';
 
 interface NgrokStepProps {
-  onComplete: (ngrokUrl: string | null) => void;
+  currentApiKey: string;
+  currentCustomDomain: string;
+  onComplete: (result: { ngrokUrl: string | null; customDomain: string | null; apiKey: string }) => void;
+}
+
+interface NgrokDomain {
+  id: string;
+  domain: string;
+  description?: string;
 }
 
 type NgrokState =
-  | 'checking'
-  | 'not-installed'
-  | 'installing'
-  | 'not-authenticated'
-  | 'auth-input'
-  | 'authenticating'
-  | 'starting'
+  | 'api-key-input'
+  | 'fetching-domains'
+  | 'select-domain'
+  | 'no-domains'
   | 'ready'
   | 'error';
 
-const WEBHOOK_PORT = '4847';
-
-export const NgrokStep: React.FC<NgrokStepProps> = ({ onComplete }) => {
-  const [state, setState] = useState<NgrokState>('checking');
-  const [ngrokUrl, setNgrokUrl] = useState<string | null>(null);
+export const NgrokStep: React.FC<NgrokStepProps> = ({
+  currentApiKey,
+  currentCustomDomain,
+  onComplete,
+}) => {
+  const [state, setState] = useState<NgrokState>(currentApiKey ? 'fetching-domains' : 'api-key-input');
+  const [apiKey, setApiKey] = useState(currentApiKey);
+  const [domains, setDomains] = useState<NgrokDomain[]>([]);
+  const [selectedDomain, setSelectedDomain] = useState<string | null>(currentCustomDomain || null);
   const [error, setError] = useState<string | null>(null);
-  const [authToken, setAuthToken] = useState('');
 
-  // Check if ngrok is installed
+  // Auto-fetch domains if we have an API key
   useEffect(() => {
-    if (state !== 'checking') return;
-
-    try {
-      execSync('which ngrok', { encoding: 'utf-8' });
-      // Ngrok is installed, check if authenticated
-      checkAuthentication();
-    } catch {
-      setState('not-installed');
+    if (state === 'fetching-domains' && apiKey) {
+      fetchDomains(apiKey);
     }
-  }, [state]);
+  }, [state, apiKey]);
 
-  const checkAuthentication = () => {
+  const fetchDomains = async (key: string) => {
     try {
-      const output = execSync('ngrok config check', {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
+      const response = await fetch('https://api.ngrok.com/reserved_domains', {
+        headers: {
+          'Authorization': `Bearer ${key}`,
+          'Ngrok-Version': '2',
+        },
       });
-      if (output.includes('Valid')) {
-        startNgrok();
-      } else {
-        setState('not-authenticated');
-      }
-    } catch {
-      setState('not-authenticated');
-    }
-  };
 
-  const installNgrok = () => {
-    setState('installing');
-    try {
-      execSync('brew install ngrok', { stdio: 'pipe' });
-      setState('not-authenticated');
-    } catch (e) {
-      setError('Failed to install ngrok. Please install manually: brew install ngrok');
+      if (!response.ok) {
+        if (response.status === 401) {
+          setError('Invalid API key. Please check your ngrok API key.');
+          setState('api-key-input');
+          return;
+        }
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const reservedDomains: NgrokDomain[] = (data.reserved_domains || []).map((d: any) => ({
+        id: d.id,
+        domain: d.domain,
+        description: d.description || undefined,
+      }));
+
+      if (reservedDomains.length === 0) {
+        setState('no-domains');
+      } else {
+        setDomains(reservedDomains);
+        // Pre-select current domain if it exists in the list
+        if (currentCustomDomain && reservedDomains.some(d => d.domain === currentCustomDomain)) {
+          setSelectedDomain(currentCustomDomain);
+        }
+        setState('select-domain');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch domains');
       setState('error');
     }
   };
 
-  const authenticateNgrok = (token: string) => {
-    if (!token.trim()) {
-      setError('Auth token is required');
+  const handleApiKeySubmit = (value: string) => {
+    const key = value.trim() || currentApiKey;
+    if (!key) {
+      setError('API key is required');
       return;
     }
-
-    setState('authenticating');
-    try {
-      execSync(`ngrok config add-authtoken ${token}`, { stdio: 'pipe' });
-      startNgrok();
-    } catch (e) {
-      setError('Failed to authenticate ngrok');
-      setState('error');
-    }
+    setApiKey(key);
+    setError(null);
+    setState('fetching-domains');
   };
 
-  const startNgrok = () => {
-    setState('starting');
-
-    // Start ngrok in detached mode so it keeps running
-    const ngrokProc = spawn('ngrok', ['http', WEBHOOK_PORT, '--log=stdout'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: true,
-    });
-
-    // Unref so the parent process can exit independently
-    ngrokProc.unref();
-
-    const timeout = setTimeout(() => {
-      setError('Timed out waiting for ngrok URL');
-      setState('error');
-    }, 15000);
-
-    let urlFound = false;
-
-    ngrokProc.stdout?.on('data', (data: Buffer) => {
-      if (urlFound) return;
-      const text = data.toString();
-
-      // Try to match URL from log output
-      const urlMatch = text.match(/url=(https:\/\/[^\s]+\.ngrok[^\s]*)/);
-      if (urlMatch && urlMatch[1]) {
-        urlFound = true;
-        clearTimeout(timeout);
-        // DON'T kill ngrok - keep it running for OAuth callback!
-        setNgrokUrl(urlMatch[1]);
-        setState('ready');
-        return;
-      }
-
-      // Try JSON format
-      const jsonUrlMatch = text.match(/"URL":"(https:\/\/[^"]+)"/);
-      if (jsonUrlMatch && jsonUrlMatch[1]) {
-        urlFound = true;
-        clearTimeout(timeout);
-        // DON'T kill ngrok - keep it running for OAuth callback!
-        setNgrokUrl(jsonUrlMatch[1]);
-        setState('ready');
-        return;
-      }
-    });
-
-    ngrokProc.on('error', () => {
-      clearTimeout(timeout);
-      setError('Failed to start ngrok');
-      setState('error');
-    });
+  const handleDomainSelect = (domain: string) => {
+    setSelectedDomain(domain);
+    setState('ready');
   };
 
-  // Handle Enter to continue when ready
   useInput((input, key) => {
     if (key.return && state === 'ready') {
-      onComplete(ngrokUrl);
+      onComplete({
+        ngrokUrl: selectedDomain ? `https://${selectedDomain}` : null,
+        customDomain: selectedDomain,
+        apiKey,
+      });
+    }
+    if (key.return && state === 'no-domains') {
+      onComplete({
+        ngrokUrl: null,
+        customDomain: null,
+        apiKey,
+      });
     }
     if (key.return && state === 'error') {
-      onComplete(null);
+      setState('api-key-input');
+      setError(null);
     }
   });
 
-  // Render based on state
   switch (state) {
-    case 'checking':
-      return (
-        <Box>
-          <Spinner label="Checking ngrok installation..." />
-        </Box>
-      );
-
-    case 'not-installed':
+    case 'api-key-input':
       return (
         <Box flexDirection="column">
-          <Text>ngrok is not installed.</Text>
-          <Box marginTop={1}>
-            <Text dimColor>Installing via Homebrew...</Text>
-          </Box>
-          {/* Auto-install on render */}
-          {(() => {
-            setTimeout(installNgrok, 100);
-            return null;
-          })()}
-        </Box>
-      );
-
-    case 'installing':
-      return (
-        <Box>
-          <Spinner label="Installing ngrok via Homebrew..." />
-        </Box>
-      );
-
-    case 'not-authenticated':
-      return (
-        <Box flexDirection="column">
-          <StatusMessage variant="warning">ngrok requires authentication</StatusMessage>
+          <Text bold>ngrok API Key</Text>
           <Box marginTop={1} flexDirection="column">
-            <Text>To get your auth token:</Text>
-            <Text>  1. Sign up at <Text color="cyan">https://ngrok.com</Text></Text>
-            <Text>  2. Go to <Text color="cyan">https://dashboard.ngrok.com/get-started/your-authtoken</Text></Text>
-            <Text>  3. Copy your auth token</Text>
+            <Text>To list your available domains, we need your ngrok API key.</Text>
+            <Text dimColor>Get it from: <Text color="cyan">https://dashboard.ngrok.com/api</Text></Text>
           </Box>
-          <Box marginTop={1}>
-            <Text dimColor>Press Enter to input your token...</Text>
-          </Box>
-          {/* Transition to auth input on Enter */}
-          <AuthInputTrigger onTrigger={() => setState('auth-input')} />
-        </Box>
-      );
-
-    case 'auth-input':
-      return (
-        <Box flexDirection="column">
-          <Text>Paste your ngrok auth token:</Text>
+          {currentApiKey && (
+            <Box marginTop={1}>
+              <Text dimColor>(Press Enter to use existing key)</Text>
+            </Box>
+          )}
           <Box marginTop={1}>
             <TextInput
-              placeholder="your-auth-token"
-              onChange={setAuthToken}
-              onSubmit={authenticateNgrok}
+              defaultValue={currentApiKey}
+              placeholder="your-ngrok-api-key"
+              onSubmit={handleApiKeySubmit}
             />
+          </Box>
+          {error && (
+            <Box marginTop={1}>
+              <Text color="red">✗ {error}</Text>
+            </Box>
+          )}
+        </Box>
+      );
+
+    case 'fetching-domains':
+      return (
+        <Box>
+          <Spinner label="Fetching your ngrok domains..." />
+        </Box>
+      );
+
+    case 'select-domain':
+      const options = domains.map((d) => ({
+        label: d.description ? `${d.domain} (${d.description})` : d.domain,
+        value: d.domain,
+      }));
+
+      return (
+        <Box flexDirection="column">
+          <Text>Select your ngrok domain:</Text>
+          <Box marginTop={1}>
+            <Select
+              options={options}
+              defaultValue={currentCustomDomain || undefined}
+              onChange={handleDomainSelect}
+              visibleOptionCount={10}
+            />
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>
+              Run ngrok with: <Text color="cyan">ngrok http --url=YOUR_DOMAIN 4847</Text>
+            </Text>
           </Box>
         </Box>
       );
 
-    case 'authenticating':
+    case 'no-domains':
       return (
-        <Box>
-          <Spinner label="Authenticating ngrok..." />
-        </Box>
-      );
-
-    case 'starting':
-      return (
-        <Box>
-          <Spinner label="Starting ngrok tunnel..." />
+        <Box flexDirection="column">
+          <StatusMessage variant="warning">No domains found</StatusMessage>
+          <Box marginTop={1} flexDirection="column">
+            <Text>You don't have any reserved domains in your ngrok account.</Text>
+            <Text dimColor>Create one at: <Text color="cyan">https://dashboard.ngrok.com/domains</Text></Text>
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>Press Enter to continue without webhooks</Text>
+          </Box>
         </Box>
       );
 
     case 'ready':
       return (
         <Box flexDirection="column">
-          <StatusMessage variant="success">ngrok tunnel ready</StatusMessage>
+          <StatusMessage variant="success">Domain selected</StatusMessage>
           <Box marginTop={1}>
-            <Text>URL: <Text color="cyan">{ngrokUrl}</Text></Text>
+            <Text>Domain: <Text color="cyan">{selectedDomain}</Text></Text>
+          </Box>
+          <Box marginTop={1} flexDirection="column">
+            <Text dimColor>Before starting TaskAgent, run:</Text>
+            <Text color="cyan">  ngrok http --url={selectedDomain} 4847</Text>
           </Box>
           <Box marginTop={1}>
-            <Text dimColor>Press Enter to continue</Text>
+            <Text color="cyan">Press Enter to continue</Text>
           </Box>
         </Box>
       );
@@ -240,7 +215,7 @@ export const NgrokStep: React.FC<NgrokStepProps> = ({ onComplete }) => {
         <Box flexDirection="column">
           <StatusMessage variant="error">{error || 'An error occurred'}</StatusMessage>
           <Box marginTop={1}>
-            <Text dimColor>Press Enter to continue without webhooks</Text>
+            <Text dimColor>Press Enter to try again</Text>
           </Box>
         </Box>
       );
@@ -248,14 +223,4 @@ export const NgrokStep: React.FC<NgrokStepProps> = ({ onComplete }) => {
     default:
       return null;
   }
-};
-
-// Helper component to trigger auth input on Enter
-const AuthInputTrigger: React.FC<{ onTrigger: () => void }> = ({ onTrigger }) => {
-  useInput((input, key) => {
-    if (key.return) {
-      onTrigger();
-    }
-  });
-  return null;
 };

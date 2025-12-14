@@ -46,6 +46,14 @@ export const CompleteStep: React.FC<CompleteStepProps> = ({ state, onComplete })
       env.set('WEBHOOK_ENABLED', 'true');
       env.set('WEBHOOK_PORT', '4847');
 
+      // ngrok configuration
+      if (state.ngrokApiKey) {
+        env.set('NGROK_API_KEY', state.ngrokApiKey);
+      }
+      if (state.ngrokCustomDomain) {
+        env.set('NGROK_CUSTOM_DOMAIN', state.ngrokCustomDomain);
+      }
+
       // Save env file
       saveEnvFile(env);
 

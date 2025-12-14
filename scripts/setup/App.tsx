@@ -29,6 +29,8 @@ export interface SetupState {
 
   // ngrok
   ngrokUrl: string | null;
+  ngrokApiKey: string;
+  ngrokCustomDomain: string;
 
   // Anthropic
   anthropicApiKey: string;
@@ -45,6 +47,7 @@ export interface SetupState {
 // Load existing .env values for idempotency
 function loadInitialState(): SetupState {
   const env = loadEnvFile();
+  const customDomain = env.get('NGROK_CUSTOM_DOMAIN') || '';
   return {
     workDir: env.get('AGENTS_WORK_DIR') || '',
     workspaceSlug: env.get('LINEAR_WORKSPACE_SLUG') || '',
@@ -52,7 +55,9 @@ function loadInitialState(): SetupState {
     linearClientSecret: env.get('LINEAR_CLIENT_SECRET') || '',
     linearWebhookSecret: env.get('LINEAR_WEBHOOK_SECRET') || '',
     linearTeamId: env.get('LINEAR_TEAM_ID') || '',
-    ngrokUrl: null,  // Generated fresh each time
+    ngrokUrl: customDomain ? `https://${customDomain}` : null,
+    ngrokApiKey: env.get('NGROK_API_KEY') || '',
+    ngrokCustomDomain: customDomain,
     anthropicApiKey: env.get('ANTHROPIC_API_KEY') || '',
     anthropicModel: env.get('ANTHROPIC_MODEL') || 'claude-sonnet-4-5',
     githubRepo: env.get('GITHUB_REPO') || '',
@@ -158,11 +163,17 @@ export const App: React.FC = () => {
           step={3}
           totalSteps={TOTAL_STEPS}
           title="Webhook Configuration"
-          description="Setting up ngrok for Linear webhooks"
+          description="Select your ngrok domain for Linear webhooks"
         >
           <NgrokStep
-            onComplete={(ngrokUrl) => {
-              updateState({ ngrokUrl });
+            currentApiKey={state.ngrokApiKey}
+            currentCustomDomain={state.ngrokCustomDomain}
+            onComplete={({ ngrokUrl, customDomain, apiKey }) => {
+              updateState({
+                ngrokUrl,
+                ngrokCustomDomain: customDomain || '',
+                ngrokApiKey: apiKey,
+              });
               goToNextStep();
             }}
           />
