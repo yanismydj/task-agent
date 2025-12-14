@@ -1625,18 +1625,10 @@ After completing this setup, configure the webhook in Linear:
      ${colors.dim}(This secret is already saved to your .env file)${colors.reset}
 
   4. ${colors.bold}Data change events${colors.reset} - Check these boxes:
-
-     ${colors.bold}Issues:${colors.reset}
-       ☑ Create    ☑ Update    ☑ Remove
-
-     ${colors.bold}Issue labels:${colors.reset}
-       ☑ Create    ☑ Update    ☑ Remove
-
-     ${colors.bold}Comments:${colors.reset}
-       ☑ Create    ☑ Update
-
-     ${colors.bold}Reactions:${colors.reset}
-       ☑ Create    ☑ Remove
+       ☑ Issues
+       ☑ Issue labels
+       ☑ Comments
+       ☑ Emoji reactions
 
   5. Click "${colors.bold}Create webhook${colors.reset}"
 
