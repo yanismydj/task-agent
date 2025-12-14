@@ -616,6 +616,7 @@ Creating the "${colors.cyan}${LABEL_GROUP.name}${colors.reset}" label group with
           color: LABEL_GROUP.color,
           description: LABEL_GROUP.description,
           teamId,
+          isGroup: true, // Mark as a group label to allow children
         });
         const parentLabel = await parentResult.issueLabel;
         if (!parentLabel) {
