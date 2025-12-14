@@ -11,6 +11,7 @@
     "dev:daemon": "tsx watch src/index.ts",
     "init": "tsx scripts/init.ts",
     "auth": "tsx scripts/auth.ts",
+    "session": "tsx scripts/session.ts",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit"
   },

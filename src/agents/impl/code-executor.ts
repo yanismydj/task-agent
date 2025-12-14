@@ -33,8 +33,17 @@ import {
   AgentExecutionError,
   AgentTimeoutError,
 } from '../core/index.js';
+import type { SessionRecord } from '../../sessions/index.js';
 
 const logger = createChildLogger({ module: 'code-executor' });
+
+/**
+ * Context passed to execution methods for session tracking
+ */
+export interface ExecutionContext {
+  /** Callback invoked when Claude Code's session ID is captured from output */
+  onSessionIdCaptured?: (sessionId: string) => void;
+}
 
 export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorOutput> {
   readonly config: AgentConfig = {
@@ -53,12 +62,16 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
   private runningProcesses: Map<string, { process: ChildProcess; ticketId: string; recentOutput: string[]; startedAt: Date }> = new Map();
   private readonly MAX_OUTPUT_LINES = 5; // Keep last N lines for UI display
   private jsonBuffer: Map<string, string> = new Map(); // Buffer for incomplete JSON lines
+  private capturedSessionIds: Map<string, string> = new Map(); // processId -> Claude session ID
 
   validateInput(input: unknown): CodeExecutorInput {
     return this.inputSchema.parse(input);
   }
 
-  async execute(input: AgentInput<CodeExecutorInput>): Promise<AgentOutput<CodeExecutorOutput>> {
+  async execute(
+    input: AgentInput<CodeExecutorInput>,
+    context?: ExecutionContext
+  ): Promise<AgentOutput<CodeExecutorOutput>> {
     const startTime = Date.now();
     const { ticketIdentifier, prompt, worktreePath, branchName } = input.data;
 
@@ -68,7 +81,7 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
     );
 
     try {
-      const result = await this.runClaudeCode(ticketIdentifier, prompt, worktreePath);
+      const result = await this.runClaudeCode(ticketIdentifier, prompt, worktreePath, context);
       const durationMs = Date.now() - startTime;
 
       return {
@@ -110,11 +123,13 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
   private async runClaudeCode(
     ticketIdentifier: string,
     prompt: string,
-    worktreePath: string
+    worktreePath: string,
+    context?: ExecutionContext
   ): Promise<CodeExecutorOutput> {
     return new Promise((resolve, reject) => {
       let output = '';
       const timeoutMs = this.config.timeoutMs!;
+      let sessionIdCaptured = false;
 
       // Build args for non-interactive/headless mode
       // See: https://github.com/ruvnet/claude-flow/wiki/Non-Interactive-Mode
@@ -176,6 +191,17 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
         // Update recent output for UI display
         this.appendRecentOutput(processEntry, text, processId);
         logger.debug({ ticketId: ticketIdentifier, bytes: text.length }, 'Claude Code output');
+
+        // Try to capture session ID from stream-json output (only once)
+        if (!sessionIdCaptured && context?.onSessionIdCaptured) {
+          const sessionId = this.extractSessionIdFromOutput(text);
+          if (sessionId) {
+            sessionIdCaptured = true;
+            this.capturedSessionIds.set(processId, sessionId);
+            context.onSessionIdCaptured(sessionId);
+            logger.info({ ticketId: ticketIdentifier, sessionId }, 'Captured Claude Code session ID');
+          }
+        }
       });
 
       childProcess.stderr?.on('data', (data: Buffer) => {
@@ -190,6 +216,7 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
         clearTimeout(timeout);
         this.runningProcesses.delete(processId);
         this.clearJsonBuffer(processId);
+        this.capturedSessionIds.delete(processId);
 
         const result = this.parseOutput(output, code, ticketIdentifier);
         resolve(result);
@@ -199,6 +226,7 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
         clearTimeout(timeout);
         this.runningProcesses.delete(processId);
         this.clearJsonBuffer(processId);
+        this.capturedSessionIds.delete(processId);
         reject(new AgentExecutionError(
           'code-executor',
           ticketIdentifier,
@@ -430,6 +458,143 @@ export class CodeExecutorAgent implements Agent<CodeExecutorInput, CodeExecutorO
    */
   private clearJsonBuffer(processId: string): void {
     this.jsonBuffer.delete(processId);
+  }
+
+  /**
+   * Extract Claude Code session ID from stream-json output
+   */
+  private extractSessionIdFromOutput(text: string): string | null {
+    // Look for sessionId in JSON lines
+    const lines = text.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('{')) continue;
+
+      try {
+        const json = JSON.parse(trimmed) as Record<string, unknown>;
+        if (typeof json.sessionId === 'string' && json.sessionId.length > 0) {
+          return json.sessionId;
+        }
+        // Also check nested in message or result objects
+        if (json.message && typeof (json.message as Record<string, unknown>).sessionId === 'string') {
+          return (json.message as Record<string, unknown>).sessionId as string;
+        }
+      } catch {
+        // Not valid JSON, skip
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Resume an interrupted Claude Code session
+   */
+  async resumeSession(session: SessionRecord): Promise<CodeExecutorOutput> {
+    if (!session.sessionId) {
+      throw new AgentExecutionError(
+        'code-executor',
+        session.ticketIdentifier,
+        'Cannot resume session: no Claude Code session ID was captured',
+        false
+      );
+    }
+
+    if (!fs.existsSync(session.worktreePath)) {
+      throw new AgentExecutionError(
+        'code-executor',
+        session.ticketIdentifier,
+        `Cannot resume session: worktree no longer exists at ${session.worktreePath}`,
+        false
+      );
+    }
+
+    logger.info(
+      { ticketId: session.ticketIdentifier, sessionId: session.sessionId, worktree: session.worktreePath },
+      'Resuming Claude Code session'
+    );
+
+    // sessionId is guaranteed non-null by the check above
+    const sessionId = session.sessionId;
+
+    return new Promise((resolve, reject) => {
+      let output = '';
+      const timeoutMs = this.config.timeoutMs!;
+
+      // Build args for resume mode
+      const baseArgs: string[] = [
+        '--resume', sessionId,               // Resume existing session
+        '--dangerously-skip-permissions',    // Auto-approve all tool usage
+        '--output-format', 'stream-json',    // Streaming JSON for real-time output
+        '--verbose',                         // Required for stream-json
+      ];
+      const args: string[] = USE_NPX
+        ? ['@anthropic-ai/claude-code', ...baseArgs]
+        : baseArgs;
+
+      logger.info(
+        { ticketId: session.ticketIdentifier, sessionId, cwd: session.worktreePath },
+        'Spawning Claude Code for session resume'
+      );
+
+      const childProcess = spawn(
+        CLAUDE_PATH,
+        args,
+        {
+          cwd: session.worktreePath,
+          env: {
+            ...process.env,
+            CLAUDE_FLOW_NON_INTERACTIVE: 'true',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'] as const,
+        }
+      );
+
+      const processId = `resume-${session.ticketIdentifier}-${Date.now()}`;
+      const processEntry = { process: childProcess, ticketId: session.ticketIdentifier, recentOutput: [] as string[], startedAt: new Date() };
+      this.runningProcesses.set(processId, processEntry);
+
+      const timeout = setTimeout(() => {
+        logger.warn({ ticketId: session.ticketIdentifier }, 'Claude Code resume timed out');
+        this.killProcess(processId);
+        reject(new AgentTimeoutError('code-executor', session.ticketIdentifier, timeoutMs));
+      }, timeoutMs);
+
+      childProcess.stdout?.on('data', (data: Buffer) => {
+        const text = data.toString();
+        output += text;
+        this.appendRecentOutput(processEntry, text, processId);
+        logger.debug({ ticketId: session.ticketIdentifier, bytes: text.length }, 'Claude Code resume output');
+      });
+
+      childProcess.stderr?.on('data', (data: Buffer) => {
+        const text = data.toString();
+        output += text;
+        this.appendRecentOutput(processEntry, text, processId);
+        logger.warn({ ticketId: session.ticketIdentifier, stderr: text.slice(0, 200) }, 'Claude Code resume stderr');
+      });
+
+      childProcess.on('close', (code: number | null) => {
+        clearTimeout(timeout);
+        this.runningProcesses.delete(processId);
+        this.clearJsonBuffer(processId);
+
+        const result = this.parseOutput(output, code, session.ticketIdentifier);
+        resolve(result);
+      });
+
+      childProcess.on('error', (error: Error) => {
+        clearTimeout(timeout);
+        this.runningProcesses.delete(processId);
+        this.clearJsonBuffer(processId);
+        reject(new AgentExecutionError(
+          'code-executor',
+          session.ticketIdentifier,
+          `Resume process error: ${error.message}`,
+          true,
+          error
+        ));
+      });
+    });
   }
 
   /**

@@ -6,6 +6,7 @@ import { linearClient, RateLimitError } from '../linear/client.js';
 import { worktreeManager } from '../agents/worktree.js';
 import { buildDualContext } from '../utils/context-builder.js';
 import { config } from '../config.js';
+import { sessionStorage } from '../sessions/index.js';
 import {
   readinessScorerAgent,
   ticketRefinerAgent,
@@ -812,6 +813,22 @@ export class QueueProcessor {
       return;
     }
 
+    // Create session record for persistence/resumption
+    const session = sessionStorage.create({
+      ticketId: task.ticketId,
+      ticketIdentifier: task.ticketIdentifier,
+      queueItemId: task.id,
+      prompt: task.prompt,
+      worktreePath: task.worktreePath,
+      branchName: task.branchName,
+      agentSessionId: task.agentSessionId ?? undefined,
+    });
+
+    logger.debug(
+      { ticketId: task.ticketIdentifier, sessionId: session.id },
+      'Created session record for execution'
+    );
+
     // Update agent activity
     if (task.agentSessionId) {
       await linearClient.addAgentActivity(task.agentSessionId, 'action', {
@@ -820,16 +837,27 @@ export class QueueProcessor {
       });
     }
 
-    const result = await codeExecutorAgent.execute({
-      ticketId: task.ticketId,
-      ticketIdentifier: task.ticketIdentifier,
-      data: {
+    const result = await codeExecutorAgent.execute(
+      {
+        ticketId: task.ticketId,
         ticketIdentifier: task.ticketIdentifier,
-        prompt: task.prompt,
-        worktreePath: task.worktreePath,
-        branchName: task.branchName,
+        data: {
+          ticketIdentifier: task.ticketIdentifier,
+          prompt: task.prompt,
+          worktreePath: task.worktreePath,
+          branchName: task.branchName,
+        },
       },
-    });
+      {
+        onSessionIdCaptured: (claudeSessionId) => {
+          sessionStorage.updateSessionId(session.id, claudeSessionId);
+          logger.info(
+            { ticketId: task.ticketIdentifier, claudeSessionId },
+            'Captured Claude Code session ID'
+          );
+        },
+      }
+    );
 
     // Clean up worktree
     await worktreeManager.remove(task.ticketIdentifier);
@@ -847,6 +875,9 @@ export class QueueProcessor {
       const willRetry = claudeQueue.fail(task.id, error);
 
       if (!willRetry) {
+        // Mark session as failed (no more retries)
+        sessionStorage.markFailed(session.id, error);
+
         if (task.agentSessionId) {
           await linearClient.errorAgentSession(task.agentSessionId, error);
           agentSessions.delete(task.ticketId);
@@ -857,6 +888,9 @@ export class QueueProcessor {
         );
         this.callbacks.onStateChange?.(task.ticketId, 'failed', { error });
       } else {
+        // Will retry - mark session as interrupted (can be resumed)
+        sessionStorage.markInterrupted(session.id, `Attempt ${task.retryCount + 1} failed: ${error}`);
+
         await linearClient.addComment(
           task.ticketId,
           `Attempt ${task.retryCount + 1} failed: ${error}\n\nRetrying...`
@@ -865,7 +899,9 @@ export class QueueProcessor {
       return;
     }
 
-    // Success!
+    // Success! Mark session as completed
+    sessionStorage.markCompleted(session.id);
+
     claudeQueue.complete(task.id, result.data.prUrl ?? undefined);
 
     await linearClient.setIssueDone(task.ticketId);

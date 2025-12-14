@@ -10,7 +10,7 @@ const logger = createChildLogger({ module: 'queue-database' });
 
 let db: Database.Database | null = null;
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 const MIGRATIONS: Record<number, string[]> = {
   1: [
@@ -278,6 +278,40 @@ const MIGRATIONS: Record<number, string[]> = {
      ON linear_labels_cache(team_id)`,
 
     `INSERT OR REPLACE INTO schema_version (version) VALUES (6)`,
+  ],
+
+  // Migration 7: Add Claude Code session persistence table
+  // Track Claude Code sessions for manual resumption after interruptions
+  7: [
+    `CREATE TABLE IF NOT EXISTS claude_code_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT UNIQUE,
+      ticket_id TEXT NOT NULL,
+      ticket_identifier TEXT NOT NULL,
+      queue_item_id INTEGER,
+      prompt TEXT NOT NULL,
+      worktree_path TEXT NOT NULL,
+      branch_name TEXT NOT NULL,
+      agent_session_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      interrupted_at TEXT,
+      completed_at TEXT,
+      error_message TEXT,
+      resume_count INTEGER NOT NULL DEFAULT 0
+    )`,
+
+    `CREATE INDEX IF NOT EXISTS idx_sessions_status
+     ON claude_code_sessions(status)`,
+
+    `CREATE INDEX IF NOT EXISTS idx_sessions_ticket
+     ON claude_code_sessions(ticket_id)`,
+
+    `CREATE INDEX IF NOT EXISTS idx_sessions_session_id
+     ON claude_code_sessions(session_id)`,
+
+    `INSERT OR REPLACE INTO schema_version (version) VALUES (7)`,
   ],
 };
 

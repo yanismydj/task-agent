@@ -1,6 +1,7 @@
 import { initDatabase, closeDatabase, type Priority, type LinearTaskType } from './database.js';
 import { linearQueue, type LinearQueueItem } from './linear-queue.js';
 import { claudeQueue, type ClaudeQueueItem } from './claude-queue.js';
+import { sessionStorage } from '../sessions/index.js';
 import { createChildLogger } from '../utils/logger.js';
 import { config } from '../config.js';
 
@@ -52,6 +53,16 @@ export class QueueManager {
     // Reset any stuck tasks from previous runs
     linearQueue.resetStuckTasks();
     claudeQueue.resetStuckTasks();
+
+    // Detect sessions that were active when the daemon last died
+    // These can be manually resumed via: npm run session resume --latest
+    const interruptedCount = sessionStorage.detectInterruptedSessions();
+    if (interruptedCount > 0) {
+      logger.warn(
+        { count: interruptedCount },
+        'Found interrupted Claude Code sessions from previous run. Use "npm run session list" to review.'
+      );
+    }
 
     this.initialized = true;
     logger.info('Queue manager initialized');
