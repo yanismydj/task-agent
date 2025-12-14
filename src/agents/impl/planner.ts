@@ -163,7 +163,7 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
       // Build args for Claude Code in plan mode
       const baseArgs = [
         '-p', prompt,
-        '--permission-mode', 'plan', // Planning mode - only asks questions
+        '--dangerously-skip-permissions', // Auto-approve all tool usage
         '--output-format', 'stream-json',
         '--verbose',
       ];
