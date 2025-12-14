@@ -340,10 +340,20 @@ async function setupEnvFile(): Promise<Map<string, string>> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Helper Functions
+// ═══════════════════════════════════════════════════════════════════════════
+
+function generateWebhookSecret(): string {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Linear Setup
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function setupLinearAuth(env: Map<string, string>): Promise<'oauth' | 'apikey'> {
+async function setupLinearAuth(env: Map<string, string>, ngrokUrl: string | null): Promise<'oauth' | 'apikey'> {
   printSection('Linear Authentication');
 
   console.log(`TaskAgent can authenticate with Linear in two ways:
@@ -362,13 +372,15 @@ async function setupLinearAuth(env: Map<string, string>): Promise<'oauth' | 'api
   const useOAuth = await promptYesNo('Use OAuth application (recommended)?', true);
 
   if (useOAuth) {
-    return await setupLinearOAuth(env);
+    return await setupLinearOAuth(env, ngrokUrl);
   } else {
     return await setupLinearApiKey(env);
   }
 }
 
-async function setupLinearOAuth(env: Map<string, string>): Promise<'oauth'> {
+async function setupLinearOAuth(env: Map<string, string>, ngrokUrl: string | null): Promise<'oauth'> {
+  const redirectUrl = ngrokUrl ? `${ngrokUrl}/oauth/callback` : 'http://localhost:3456/oauth/callback';
+
   console.log(`
 ${colors.bold}Creating a Linear OAuth Application:${colors.reset}
 
@@ -376,15 +388,30 @@ ${colors.bold}Creating a Linear OAuth Application:${colors.reset}
 
   2. Click "${colors.bold}Create new application${colors.reset}"
 
-  3. Fill in the details:
-     - Name: ${colors.bold}TaskAgent${colors.reset} (or your preferred name)
-     - Description: AI coding agent assistant
-     - Redirect URL: ${colors.bold}http://localhost:3456/oauth/callback${colors.reset}
+  3. Fill in the application details:
+     ${colors.bold}Name:${colors.reset} TaskAgent (or your preferred name)
+     ${colors.bold}Description:${colors.reset} AI coding agent assistant
+     ${colors.bold}Redirect URL:${colors.reset} ${colors.cyan}${redirectUrl}${colors.reset}
 
-  4. Under "Actor", select: ${colors.bold}Application${colors.reset}
-     (This creates a dedicated bot user)
+     ${colors.bold}IMPORTANT - Actor field:${colors.reset}
+     ${colors.bold}Select "Application"${colors.reset} to create a dedicated bot user for TaskAgent.
+     This makes TaskAgent appear as a separate user in Linear, not as you.
 
-  5. Click "Create" and copy the Client ID and Client Secret
+  4. ${colors.bold}Permissions:${colors.reset}
+     The default permissions should be sufficient. TaskAgent needs:
+     - Read access to issues and comments
+     - Write access to create issues and comments
+     - Ability to be assigned to issues
+
+  5. Click "${colors.bold}Create${colors.reset}" and copy the Client ID and Client Secret
+
+${ngrokUrl ? `
+${colors.dim}Note: Using ngrok URL for redirect. If ngrok restarts, you'll need to update
+the redirect URL in Linear's application settings.${colors.reset}
+` : `
+${colors.yellow}⚠ Warning:${colors.reset} ${colors.dim}Using localhost redirect URL. This won't work on remote/cloud machines.
+Consider enabling webhooks for ngrok-based redirect URLs.${colors.reset}
+`}
 `);
 
   await waitForEnter('Press Enter after creating the application...');
@@ -1443,7 +1470,7 @@ ${colors.dim}Then re-run this setup script.${colors.reset}
 // Webhook Setup
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function setupWebhooks(env: Map<string, string>): Promise<boolean> {
+async function setupWebhooks(env: Map<string, string>): Promise<{ enabled: boolean; ngrokUrl: string | null }> {
   printSection('Webhook Configuration (Optional)');
 
   console.log(`
@@ -1452,7 +1479,12 @@ ${colors.bold}Webhooks${colors.reset} enable real-time updates from Linear.
 Without webhooks: TaskAgent polls Linear every 30 seconds
 With webhooks: TaskAgent gets instant notifications
 
-Webhooks require ngrok (or similar) to expose your local server.
+${colors.bold}Benefits:${colors.reset}
+- Immediate response to Linear changes
+- Works on remote/cloud development machines
+- OAuth redirect URLs work from anywhere
+
+${colors.dim}Webhooks require ngrok (or similar tunnel) to expose your local server.${colors.reset}
 `);
 
   const enableWebhooks = await promptYesNo('Enable webhooks?', false);
@@ -1460,7 +1492,7 @@ Webhooks require ngrok (or similar) to expose your local server.
   if (!enableWebhooks) {
     env.set('WEBHOOK_ENABLED', 'false');
     printInfo('Webhooks disabled. TaskAgent will use polling.');
-    return false;
+    return { enabled: false, ngrokUrl: null };
   }
 
   env.set('WEBHOOK_ENABLED', 'true');
@@ -1510,40 +1542,111 @@ Get your token at: ${colors.cyan}https://dashboard.ngrok.com/get-started/your-au
       } catch (error) {
         printError('Failed to install ngrok. Please install manually.');
         env.set('WEBHOOK_ENABLED', 'false');
-        return false;
+        return { enabled: false, ngrokUrl: null };
       }
     } else {
       printWarning('ngrok not installed. Disabling webhooks.');
       env.set('WEBHOOK_ENABLED', 'false');
-      return false;
+      return { enabled: false, ngrokUrl: null };
     }
   }
 
   const port = await promptWithDefault('Webhook port', env.get('WEBHOOK_PORT') || '3000');
   env.set('WEBHOOK_PORT', port);
 
+  // Generate webhook signing secret
+  const webhookSecret = generateWebhookSecret();
+  env.set('LINEAR_WEBHOOK_SECRET', webhookSecret);
+
+  // Start ngrok to get the URL
+  console.log(`\n${colors.bold}Starting ngrok tunnel...${colors.reset}`);
+  console.log(`${colors.dim}This may take a few seconds...${colors.reset}\n`);
+
+  let ngrokUrl: string | null = null;
+  try {
+    const ngrokProc = spawn('ngrok', ['http', port, '--log=stdout'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    // Wait for ngrok URL
+    ngrokUrl = await new Promise<string | null>((resolve) => {
+      const timeout = setTimeout(() => {
+        ngrokProc.kill();
+        resolve(null);
+      }, 10000); // 10 second timeout
+
+      ngrokProc.stdout?.on('data', (data: Buffer) => {
+        const text = data.toString();
+        const urlMatch = text.match(/url=(https:\/\/[^\s]+\.ngrok[^\s]*)/);
+        if (urlMatch && urlMatch[1]) {
+          clearTimeout(timeout);
+          resolve(urlMatch[1]);
+          return;
+        }
+
+        const jsonUrlMatch = text.match(/"URL":"(https:\/\/[^"]+)"/);
+        if (jsonUrlMatch && jsonUrlMatch[1]) {
+          clearTimeout(timeout);
+          resolve(jsonUrlMatch[1]);
+          return;
+        }
+      });
+
+      ngrokProc.on('error', () => {
+        clearTimeout(timeout);
+        resolve(null);
+      });
+    });
+
+    // Kill the temporary ngrok process
+    ngrokProc.kill();
+  } catch (error) {
+    printWarning('Failed to start ngrok automatically');
+  }
+
+  if (ngrokUrl) {
+    printSuccess(`Ngrok URL obtained: ${ngrokUrl}`);
+  } else {
+    printWarning('Could not automatically detect ngrok URL');
+    console.log(`${colors.dim}You'll need to start ngrok manually and copy the URL${colors.reset}\n`);
+  }
+
   console.log(`
-${colors.bold}Webhook setup instructions:${colors.reset}
+${colors.bold}Linear Webhook Configuration:${colors.reset}
 
-After starting TaskAgent, you'll need to:
+After completing this setup, configure the webhook in Linear:
 
-  1. Start ngrok in a separate terminal:
-     ${colors.cyan}ngrok http ${port}${colors.reset}
+  1. Go to: ${colors.cyan}https://linear.app/settings/api/webhooks${colors.reset}
 
-  2. Copy the HTTPS URL (e.g., https://abc123.ngrok.io)
+  2. Click "${colors.bold}Create webhook${colors.reset}"
 
-  3. In Linear: Settings > API > Webhooks > New Webhook
-     - URL: ${colors.cyan}<ngrok-url>/webhook${colors.reset}
-     - Events: Issue, Comment
-     - Copy the signing secret
+  3. Fill in the webhook details:
+     ${colors.bold}Label:${colors.reset} TaskAgent
+     ${colors.bold}Webhook URL:${colors.reset} ${colors.cyan}${ngrokUrl ? `${ngrokUrl}/webhook` : '<ngrok-url>/webhook'}${colors.reset}
+     ${colors.bold}Enable webhook:${colors.reset} ✓ Check this box
 
-  4. Add the signing secret to your .env:
-     ${colors.cyan}LINEAR_WEBHOOK_SECRET=<your-secret>${colors.reset}
+  4. ${colors.bold}Webhook signing secret:${colors.reset}
+     Paste this secret (already saved to .env):
+     ${colors.cyan}${webhookSecret}${colors.reset}
+
+  5. ${colors.bold}Data change events${colors.reset} - Select these events:
+     ${colors.bold}Issue:${colors.reset}
+       ☑ Issue created
+       ☑ Issue updated
+       ☑ Issue removed
+     ${colors.bold}Comment:${colors.reset}
+       ☑ Comment created
+       ☑ Comment updated
+
+  6. Click "${colors.bold}Create webhook${colors.reset}"
+
+${colors.yellow}IMPORTANT:${colors.reset} ${colors.dim}Keep ngrok running while TaskAgent is active.
+If you restart ngrok and get a new URL, update the webhook URL in Linear.${colors.reset}
 `);
 
   await waitForEnter();
 
-  return true;
+  return { enabled: true, ngrokUrl };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1682,6 +1785,7 @@ function printNextSteps(env: Map<string, string>): void {
   const webhooksEnabled = env.get('WEBHOOK_ENABLED') === 'true';
   const hasOAuth = env.get('LINEAR_CLIENT_ID') && env.get('LINEAR_CLIENT_SECRET');
   const tokenExists = fs.existsSync(TOKEN_PATH) || fs.existsSync(LEGACY_TOKEN_PATH);
+  const webhookSecret = env.get('LINEAR_WEBHOOK_SECRET');
 
   console.log(`${colors.bold}Next Steps:${colors.reset}\n`);
 
@@ -1693,21 +1797,27 @@ function printNextSteps(env: Map<string, string>): void {
     step++;
   }
 
-  if (webhooksEnabled) {
-    console.log(`  ${step}. Start ngrok in a separate terminal:`);
-    console.log(`     ${colors.cyan}ngrok http ${env.get('WEBHOOK_PORT') || '3000'}${colors.reset}\n`);
+  if (webhooksEnabled && webhookSecret) {
+    console.log(`  ${step}. Keep ngrok running in a separate terminal:`);
+    console.log(`     ${colors.cyan}ngrok http ${env.get('WEBHOOK_PORT') || '3000'}${colors.reset}`);
+    console.log(`     ${colors.dim}(If you closed it, restart it and update the webhook URL in Linear)${colors.reset}\n`);
     step++;
 
-    console.log(`  ${step}. Configure Linear webhook:`);
-    console.log(`     - Go to Linear Settings > API > Webhooks`);
-    console.log(`     - Create webhook with ngrok URL + /webhook`);
-    console.log(`     - Add signing secret to .env as LINEAR_WEBHOOK_SECRET\n`);
+    console.log(`  ${step}. Verify Linear webhook is configured:`);
+    console.log(`     - URL should point to your ngrok tunnel + /webhook`);
+    console.log(`     - Webhook secret should match the one in .env`);
+    console.log(`     - Events should include Issue and Comment changes\n`);
     step++;
   }
 
   console.log(`  ${step}. Start TaskAgent:`);
   console.log(`     ${colors.cyan}npm run dev${colors.reset}\n`);
   step++;
+
+  if (webhooksEnabled) {
+    console.log(`${colors.yellow}Note:${colors.reset} ${colors.dim}With webhooks enabled, TaskAgent will receive real-time updates from Linear.
+If ngrok restarts and you get a new URL, remember to update the webhook URL in Linear.${colors.reset}\n`);
+  }
 
   console.log(`${colors.dim}For more information, see the README.md${colors.reset}\n`);
 }
@@ -1742,26 +1852,26 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
-    // Step 4: Linear authentication
-    await setupLinearAuth(env);
+    // Step 4: Webhook setup (BEFORE OAuth to get ngrok URL)
+    const webhookSetup = await setupWebhooks(env);
 
-    // Step 5: Fetch Linear teams
+    // Step 5: Linear authentication (with ngrok URL if webhooks enabled)
+    await setupLinearAuth(env, webhookSetup.ngrokUrl);
+
+    // Step 6: Fetch Linear teams
     await fetchLinearTeams(env);
 
-    // Step 6: Anthropic API
+    // Step 7: Anthropic API
     await setupAnthropic(env);
 
-    // Step 7: GitHub configuration (if not auto-detected from repo)
+    // Step 8: GitHub configuration (if not auto-detected from repo)
     const existingRepo = env.get('GITHUB_REPO');
     if (!existingRepo || existingRepo === 'owner/repo-name') {
       await setupGitHub(env);
     }
 
-    // Step 8: Agent concurrency settings
+    // Step 9: Agent concurrency settings
     await setupAgentConcurrency(env);
-
-    // Step 9: Webhook setup
-    await setupWebhooks(env);
 
     // Save configuration
     printSection('Saving Configuration');
