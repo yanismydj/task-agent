@@ -145,6 +145,8 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
   if (mention.command === 'help') {
     logger.info({ issueId, ticketIdentifier }, 'Responding with help text');
     await linearClient.addComment(issueId, getHelpText());
+    // Delete the command comment to clean up the ticket
+    await linearClient.deleteComment(data.id);
     return;
   }
 
@@ -172,6 +174,9 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
     taskType,
     priority: 1, // User-triggered = highest priority
   });
+
+  // Delete the command comment to clean up the ticket
+  await linearClient.deleteComment(data.id);
 
   logger.info({ issueId, ticketIdentifier, command: mention.command, taskType }, 'Enqueued task from @taskAgent mention');
 }

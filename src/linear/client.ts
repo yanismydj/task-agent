@@ -51,6 +51,7 @@ const COMPLEXITY_ESTIMATES: Record<string, number> = {
   'getTickets': 100, // Per page of 50
   'getComments': 50,
   'addComment': 5,
+  'deleteComment': 5,
   'updateIssue': 10,
   'syncLabels': 50,
   'createAgentSession': 15,
@@ -693,6 +694,20 @@ export class LinearApiClient {
     }
 
     logger.info({ issueId }, 'Added comment to ticket');
+  }
+
+  async deleteComment(commentId: string): Promise<void> {
+    logger.debug({ commentId }, 'Deleting comment');
+    this.logComplexity('deleteComment');
+
+    await this.withRetry(async (client) => {
+      await client.deleteComment(commentId);
+    });
+
+    // Remove from local cache
+    linearCache.deleteComment(commentId);
+
+    logger.info({ commentId }, 'Deleted comment');
   }
 
   async updateTicket(issueId: string, update: TicketUpdate): Promise<void> {
