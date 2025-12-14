@@ -353,29 +353,8 @@ function generateWebhookSecret(): string {
 // Linear Setup
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function setupLinearAuth(env: Map<string, string>, ngrokUrl: string | null, workspaceSlug: string, webhookSecret: string | null): Promise<'oauth' | 'apikey'> {
-  printSection('Linear Authentication');
-
-  console.log(`TaskAgent can authenticate with Linear in two ways:
-
-  ${colors.bold}1. OAuth Application${colors.reset} ${colors.green}(Recommended)${colors.reset}
-     - Creates a dedicated bot user for TaskAgent
-     - Bot appears as separate user in Linear
-     - Better for team visibility
-
-  ${colors.bold}2. Personal API Key${colors.reset}
-     - Uses your personal Linear account
-     - Faster setup, good for testing
-     - Actions appear as coming from you
-`);
-
-  const useOAuth = await promptYesNo('Use OAuth application (recommended)?', true);
-
-  if (useOAuth) {
-    return await setupLinearOAuth(env, ngrokUrl, workspaceSlug, webhookSecret);
-  } else {
-    return await setupLinearApiKey(env);
-  }
+async function setupLinearAuth(env: Map<string, string>, ngrokUrl: string | null, workspaceSlug: string, webhookSecret: string | null): Promise<'oauth'> {
+  return await setupLinearOAuth(env, ngrokUrl, workspaceSlug, webhookSecret);
 }
 
 async function setupLinearOAuth(env: Map<string, string>, ngrokUrl: string | null, workspaceSlug: string, webhookSecret: string | null): Promise<'oauth'> {
@@ -431,37 +410,6 @@ ${colors.dim}Note: TaskAgent manages ngrok automatically when the daemon is runn
 
   printSuccess('Linear OAuth credentials saved');
   return 'oauth';
-}
-
-async function setupLinearApiKey(env: Map<string, string>): Promise<'apikey'> {
-  console.log(`
-${colors.bold}Creating a Linear API Key:${colors.reset}
-
-  1. Go to: ${colors.cyan}https://linear.app/settings/api${colors.reset}
-
-  2. Under "Personal API keys", click "${colors.bold}Create key${colors.reset}"
-
-  3. Give it a name like "TaskAgent"
-
-  4. Copy the generated key (starts with lin_api_)
-`);
-
-  await waitForEnter('Press Enter after creating the API key...');
-
-  const apiKey = await promptSecret(`${icons.arrow} API Key: `);
-
-  if (!apiKey || !apiKey.startsWith('lin_api_')) {
-    printError('Invalid API key format (should start with lin_api_)');
-    process.exit(1);
-  }
-
-  env.set('LINEAR_API_KEY', apiKey);
-  // Clear OAuth credentials if switching to API key
-  env.delete('LINEAR_CLIENT_ID');
-  env.delete('LINEAR_CLIENT_SECRET');
-
-  printSuccess('Linear API key saved');
-  return 'apikey';
 }
 
 async function fetchLinearTeams(env: Map<string, string>): Promise<void> {
