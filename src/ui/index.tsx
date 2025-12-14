@@ -17,6 +17,7 @@ class InkTerminalUI {
   private maxLogs = 50; // Increased for better scrollback
   private rateLimitResetAt: Date | null = null;
   private inkInstance: { clear: () => void; unmount: () => void; waitUntilExit: () => Promise<void> } | null = null;
+  private initStatus: string | undefined = undefined;
 
   start(): void {
     if (this.inkInstance) {
@@ -33,8 +34,13 @@ class InkTerminalUI {
         getLogs={() => this.logBuffer}
         getAgentState={() => getAgentState?.() ?? { agents: [], available: 0, total: 5 }}
         getRateLimitResetAt={() => this.rateLimitResetAt}
+        getInitStatus={() => this.initStatus}
       />
     );
+  }
+
+  setInitStatus(status: string | undefined): void {
+    this.initStatus = status;
   }
 
   log(level: LogEntry['level'], message: string, module?: string): void {

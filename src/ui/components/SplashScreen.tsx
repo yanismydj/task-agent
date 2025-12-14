@@ -11,7 +11,11 @@ const LOGO = `
      ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
 `;
 
-export const SplashScreen: React.FC = () => {
+interface SplashScreenProps {
+  initStatus?: string;
+}
+
+export const SplashScreen: React.FC<SplashScreenProps> = ({ initStatus }) => {
   const { stdout } = useStdout();
   const terminalHeight = stdout?.rows ?? 24;
 
@@ -33,7 +37,7 @@ export const SplashScreen: React.FC = () => {
         <Text dimColor>v0.1.0</Text>
       </Box>
       <Box marginTop={2}>
-        <Spinner label="Initializing..." />
+        <Spinner label={initStatus || "Initializing..."} />
       </Box>
     </Box>
   );

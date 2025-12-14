@@ -19,7 +19,8 @@ let ngrokInstance: NgrokInfo = {
  */
 export async function startNgrok(port: number): Promise<string | null> {
   return new Promise((resolve) => {
-    logger.info({ port }, 'Starting ngrok tunnel...');
+    // Don't log during startup - let the caller handle status updates
+    // This prevents console output before the splash screen is ready
 
     const proc = spawn('ngrok', ['http', String(port), '--log=stdout'], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -28,7 +29,10 @@ export async function startNgrok(port: number): Promise<string | null> {
     let resolved = false;
     const timeout = setTimeout(() => {
       if (!resolved) {
-        logger.warn('Ngrok URL not found within timeout, continuing without URL');
+        // Only log warning after startup is complete
+        setTimeout(() => {
+          logger.warn('Ngrok URL not found within timeout, continuing without URL');
+        }, 100);
         resolved = true;
         resolve(null);
       }
@@ -42,8 +46,11 @@ export async function startNgrok(port: number): Promise<string | null> {
       if (urlMatch && urlMatch[1] && !resolved) {
         const url = urlMatch[1];
         ngrokInstance.url = url;
-        logger.info({ url }, 'Ngrok tunnel established');
-        logger.info({ endpoint: `${url}/webhook` }, 'Webhook endpoint ready');
+        // Defer logging until after splash screen
+        setTimeout(() => {
+          logger.info({ url }, 'Ngrok tunnel established');
+          logger.info({ endpoint: `${url}/webhook` }, 'Webhook endpoint ready');
+        }, 100);
         clearTimeout(timeout);
         resolved = true;
         resolve(url);
@@ -55,8 +62,11 @@ export async function startNgrok(port: number): Promise<string | null> {
       if (jsonUrlMatch && jsonUrlMatch[1] && !resolved) {
         const url = jsonUrlMatch[1];
         ngrokInstance.url = url;
-        logger.info({ url }, 'Ngrok tunnel established');
-        logger.info({ endpoint: `${url}/webhook` }, 'Webhook endpoint ready');
+        // Defer logging until after splash screen
+        setTimeout(() => {
+          logger.info({ url }, 'Ngrok tunnel established');
+          logger.info({ endpoint: `${url}/webhook` }, 'Webhook endpoint ready');
+        }, 100);
         clearTimeout(timeout);
         resolved = true;
         resolve(url);
@@ -67,17 +77,25 @@ export async function startNgrok(port: number): Promise<string | null> {
     proc.stderr?.on('data', (data: Buffer) => {
       const text = data.toString().trim();
       if (text) {
-        logger.debug({ message: text }, 'Ngrok stderr');
+        // Defer debug logs
+        setTimeout(() => {
+          logger.debug({ message: text }, 'Ngrok stderr');
+        }, 100);
       }
     });
 
     proc.on('error', (err) => {
       clearTimeout(timeout);
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        logger.error('ngrok not found. Install with: brew install ngrok');
-        logger.error('Then authenticate with: ngrok authtoken <your-token>');
+        // Defer error logs
+        setTimeout(() => {
+          logger.error('ngrok not found. Install with: brew install ngrok');
+          logger.error('Then authenticate with: ngrok authtoken <your-token>');
+        }, 100);
       } else {
-        logger.error({ error: err.message }, 'Ngrok error');
+        setTimeout(() => {
+          logger.error({ error: err.message }, 'Ngrok error');
+        }, 100);
       }
       if (!resolved) {
         resolved = true;

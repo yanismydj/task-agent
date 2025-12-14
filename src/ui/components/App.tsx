@@ -9,9 +9,10 @@ interface AppProps {
   getLogs: () => LogEntry[];
   getAgentState: () => { agents: AgentInfo[]; available: number; total: number };
   getRateLimitResetAt: () => Date | null;
+  getInitStatus: () => string | undefined;
 }
 
-export const App: React.FC<AppProps> = ({ getLogs, getAgentState, getRateLimitResetAt }) => {
+export const App: React.FC<AppProps> = ({ getLogs, getAgentState, getRateLimitResetAt, getInitStatus }) => {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const [showSplash, setShowSplash] = React.useState(true);
@@ -28,16 +29,31 @@ export const App: React.FC<AppProps> = ({ getLogs, getAgentState, getRateLimitRe
     }
   });
 
-  // Splash screen timer
+  // Refresh UI periodically to update initialization status
   React.useEffect(() => {
-    const timer = setTimeout(() => {
-      setShowSplash(false);
-    }, 2000);
+    if (showSplash) {
+      const interval = setInterval(() => {
+        forceUpdate();
+      }, 100); // Fast refresh during splash to show status updates
 
-    return () => clearTimeout(timer);
-  }, []);
+      return () => clearInterval(interval);
+    }
+    return undefined;
+  }, [showSplash]);
 
-  // Refresh UI periodically
+  // Check if initialization is complete
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      const status = getInitStatus();
+      if (status === 'complete') {
+        setShowSplash(false);
+      }
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, [getInitStatus]);
+
+  // Refresh UI periodically after splash
   React.useEffect(() => {
     if (!showSplash) {
       const interval = setInterval(() => {
@@ -50,7 +66,7 @@ export const App: React.FC<AppProps> = ({ getLogs, getAgentState, getRateLimitRe
   }, [showSplash]);
 
   if (showSplash) {
-    return <SplashScreen />;
+    return <SplashScreen initStatus={getInitStatus()} />;
   }
 
   const logs = getLogs();
