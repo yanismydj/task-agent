@@ -130,12 +130,16 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
       // Clear any awaiting response state
       queueScheduler.clearAwaitingResponse(data.id);
 
-      // Enqueue the task
+      // Enqueue the task with appropriate inputData
+      // For 'clarify' label, pass forceAskQuestions to ensure questions are asked
+      const inputData = labelNameLower === 'clarify' ? { forceAskQuestions: true } : undefined;
+
       linearQueue.enqueue({
         ticketId: data.id,
         ticketIdentifier: data.identifier,
         taskType,
         priority: 1, // User-triggered = highest priority
+        inputData,
       });
 
       logger.info({ issueId: data.identifier, taskType }, 'Enqueued task from trigger label');

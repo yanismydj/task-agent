@@ -379,17 +379,46 @@ export class QueueProcessor {
       );
     }
 
-    const readiness = task.inputData?.readiness as ReadinessScorerOutput | undefined;
+    // Get readiness data - either from inputData or calculate inline
+    let readiness = task.inputData?.readiness as ReadinessScorerOutput | undefined;
+    const forceAskQuestions = task.inputData?.forceAskQuestions as boolean | undefined;
+
     if (!readiness) {
-      // Need to re-evaluate first (will see the consolidated description)
-      linearQueue.enqueue({
+      // Calculate readiness inline instead of deferring to evaluate task
+      logger.info({ ticketId: task.ticketIdentifier }, 'Calculating readiness inline for refine task');
+
+      const readinessInput: AgentInput<ReadinessScorerInput> = {
         ticketId: task.ticketId,
         ticketIdentifier: task.ticketIdentifier,
-        taskType: 'evaluate',
-        priority: task.priority,
-      });
-      linearQueue.complete(task.id, { reason: 'missing_readiness' });
-      return;
+        data: {
+          title: ticket.title,
+          description: ticket.description || '',
+          priority: ticket.priority,
+          labels: ticket.labels,
+          state: ticket.state,
+          comments: comments.map((c) => ({ body: c.body, createdAt: c.createdAt })),
+        },
+        context: { updatedAt: ticket.updatedAt },
+      };
+
+      const readinessResult = await readinessScorerAgent.execute(readinessInput);
+      if (!readinessResult.success || !readinessResult.data) {
+        linearQueue.fail(task.id, readinessResult.error || 'Failed to calculate readiness');
+        return;
+      }
+      readiness = readinessResult.data;
+    }
+
+    // If forceAskQuestions is set (from "clarify" label), override readiness to force questions
+    if (forceAskQuestions) {
+      logger.info({ ticketId: task.ticketIdentifier }, 'Force asking questions (triggered via clarify label)');
+      readiness = {
+        ...readiness,
+        ready: false,
+        recommendedAction: 'refine',
+        // Add a suggestion to prompt questions
+        suggestions: [...readiness.suggestions, 'User requested clarification via label'],
+      };
     }
 
     // Build dual context from repo summary and Linear tickets
