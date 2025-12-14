@@ -18,9 +18,9 @@ const getLevelIcon = (level: LogEntry['level']): string => {
   switch (level) {
     case 'info': return '●';
     case 'success': return '✓';
-    case 'warn': return '▲';
+    case 'warn': return '⚠';
     case 'error': return '✖';
-    case 'debug': return '●';
+    case 'debug': return '○';
     default: return ' ';
   }
 };
@@ -50,24 +50,35 @@ export const LogPane: React.FC<LogPaneProps> = ({ title, logs, maxLines = 15 }) 
 
   return (
     <Box flexDirection="column" height="100%" paddingX={1}>
-      <Box borderStyle="round" borderColor="cyan" paddingX={1} marginBottom={1}>
-        <Text bold color="cyan">{title}</Text>
+      {/* Header */}
+      <Box
+        borderStyle="double"
+        borderColor="cyan"
+        paddingX={2}
+        marginBottom={1}
+        justifyContent="center"
+      >
+        <Text bold color="cyan">📋 {title}</Text>
       </Box>
-      <Box flexDirection="column" flexGrow={1}>
+
+      {/* Log entries */}
+      <Box flexDirection="column" flexGrow={1} overflowY="hidden">
         {displayLogs.length === 0 ? (
-          <Text dimColor>Waiting for activity...</Text>
+          <Text dimColor italic>Waiting for activity...</Text>
         ) : (
           displayLogs.map((entry, index) => {
             const time = formatTime(entry.timestamp);
             const icon = getLevelIcon(entry.level);
             const color = getLevelColor(entry.level);
-            const module = entry.module ? `[${entry.module}] ` : '';
+            const module = entry.module ? `[${entry.module}]` : '';
 
             return (
               <Box key={`${entry.timestamp.getTime()}-${index}`}>
-                <Text dimColor>{time} </Text>
-                <Text color={color}>{icon} </Text>
-                <Text dimColor>{module}</Text>
+                <Text dimColor>{time}</Text>
+                <Text> </Text>
+                <Text color={color}>{icon}</Text>
+                <Text> </Text>
+                {module && <Text color="blue">{module} </Text>}
                 <Text color={entry.level === 'error' || entry.level === 'warn' ? color : 'white'}>
                   {entry.message}
                 </Text>

@@ -57,17 +57,21 @@ export const App: React.FC<AppProps> = ({ getLogs, getAgentState, getRateLimitRe
   const agentState = getAgentState();
   const rateLimitResetAt = getRateLimitResetAt();
 
+  // Calculate available height for panes (subtract status bar)
+  const paneHeight = Math.max(10, terminalHeight - 4);
+
   return (
     <Box flexDirection="column" height={terminalHeight}>
       {/* Rate limit banner */}
       {rateLimitResetAt && new Date() < rateLimitResetAt && (
         <Box
-          backgroundColor="yellow"
-          paddingX={1}
+          borderStyle="round"
+          borderColor="yellow"
+          paddingX={2}
           marginBottom={1}
         >
-          <Text color="black" bold>
-            ⚠  Linear rate limit hit - paused until {rateLimitResetAt.toLocaleTimeString('en-US', {
+          <Text color="yellow" bold>
+            ⚠  Rate limited - resuming at {rateLimitResetAt.toLocaleTimeString('en-US', {
               hour12: false,
               hour: '2-digit',
               minute: '2-digit',
@@ -77,14 +81,24 @@ export const App: React.FC<AppProps> = ({ getLogs, getAgentState, getRateLimitRe
       )}
 
       {/* Split pane layout */}
-      <Box flexGrow={1}>
+      <Box flexGrow={1} height={paneHeight}>
         {/* Left pane: TaskAgent logs */}
-        <Box width="50%" borderStyle="single" borderColor="gray">
-          <LogPane title="TASKAGENT ACTIVITY" logs={logs} maxLines={20} />
+        <Box
+          width="60%"
+          borderStyle="bold"
+          borderColor="gray"
+          flexDirection="column"
+        >
+          <LogPane title="ACTIVITY" logs={logs} maxLines={paneHeight - 5} />
         </Box>
 
         {/* Right pane: Claude Code output */}
-        <Box width="50%" borderStyle="single" borderColor="gray">
+        <Box
+          width="40%"
+          borderStyle="bold"
+          borderColor="gray"
+          flexDirection="column"
+        >
           <AgentPane
             agents={agentState.agents}
             available={agentState.available}

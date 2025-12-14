@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
+    "@inkjs/ui": "^2.0.0",
     "@linear/sdk": "^65.2.0",
     "better-sqlite3": "^12.5.0",
     "dotenv": "^16.4.7",

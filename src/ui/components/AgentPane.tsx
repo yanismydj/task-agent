@@ -1,5 +1,6 @@
 import React from 'react';
 import { Box, Text } from 'ink';
+import { Spinner, Badge } from '@inkjs/ui';
 
 export interface AgentInfo {
   id: string;
@@ -15,29 +16,6 @@ interface AgentPaneProps {
   total: number;
 }
 
-const getStatusIcon = (status: string): string => {
-  switch (status) {
-    case 'working': return '◉';
-    case 'executing': return '◉';
-    case 'completed': return '✓';
-    case 'failed': return '✗';
-    case 'assigned': return '○';
-    default: return '○';
-  }
-};
-
-const getStatusColor = (status: string): string => {
-  switch (status) {
-    case 'working':
-    case 'executing':
-      return 'yellow';
-    case 'completed': return 'green';
-    case 'failed': return 'red';
-    case 'assigned': return 'blue';
-    default: return 'gray';
-  }
-};
-
 const formatDuration = (ms: number): string => {
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
@@ -52,56 +30,95 @@ const formatDuration = (ms: number): string => {
   }
 };
 
+const getBadgeColor = (status: string): 'green' | 'yellow' | 'red' | 'blue' => {
+  switch (status) {
+    case 'working':
+    case 'executing':
+      return 'yellow';
+    case 'completed':
+      return 'green';
+    case 'failed':
+      return 'red';
+    default:
+      return 'blue';
+  }
+};
+
 export const AgentPane: React.FC<AgentPaneProps> = ({ agents, available, total }) => {
   return (
     <Box flexDirection="column" height="100%" paddingX={1}>
-      <Box borderStyle="round" borderColor="cyan" paddingX={1} marginBottom={1}>
-        <Text bold color="cyan">CLAUDE CODE OUTPUT</Text>
+      {/* Header */}
+      <Box
+        borderStyle="double"
+        borderColor="magenta"
+        paddingX={2}
+        marginBottom={1}
+        justifyContent="center"
+      >
+        <Text bold color="magenta">⚡ CLAUDE CODE</Text>
       </Box>
+
       <Box flexDirection="column" flexGrow={1}>
         {agents.length === 0 ? (
-          <Box flexDirection="column">
-            <Text dimColor>No active sessions</Text>
-            <Box marginTop={1}>
-              <Text color="green">●</Text>
-              <Text> {available}/{total} slots available</Text>
+          <Box flexDirection="column" paddingY={1}>
+            <Text dimColor italic>No active sessions</Text>
+            <Box marginTop={2} gap={1}>
+              <Badge color="green">{available}/{total}</Badge>
+              <Text>slots available</Text>
             </Box>
           </Box>
         ) : (
           <Box flexDirection="column">
             {agents.map((agent) => {
               const runtime = formatDuration(Date.now() - agent.startedAt.getTime());
-              const statusIcon = getStatusIcon(agent.status);
-              const statusColor = getStatusColor(agent.status);
               const ticket = agent.ticketIdentifier || 'Unknown';
+              const isActive = agent.status === 'working' || agent.status === 'executing';
 
               return (
-                <Box key={agent.id} flexDirection="column" marginBottom={1}>
-                  <Box>
-                    <Text color={statusColor}>{statusIcon} </Text>
-                    <Text bold>{ticket}</Text>
-                    <Text dimColor> │ </Text>
-                    <Text color="cyan">{agent.status}</Text>
-                    <Text dimColor> │ {runtime}</Text>
+                <Box
+                  key={agent.id}
+                  flexDirection="column"
+                  marginBottom={1}
+                  borderStyle="round"
+                  borderColor="gray"
+                  paddingX={1}
+                >
+                  {/* Agent header */}
+                  <Box gap={1} paddingY={0}>
+                    {isActive ? (
+                      <Spinner />
+                    ) : (
+                      <Text color={getBadgeColor(agent.status)}>●</Text>
+                    )}
+                    <Text bold color="white">{ticket}</Text>
+                    <Badge color={getBadgeColor(agent.status)}>{agent.status}</Badge>
+                    <Text dimColor>{runtime}</Text>
                   </Box>
-                  {agent.recentOutput.length > 0 ? (
-                    agent.recentOutput.map((line, idx) => (
-                      <Box key={idx} paddingLeft={2}>
-                        <Text dimColor>│ </Text>
-                        <Text>{line}</Text>
+
+                  {/* Agent output */}
+                  <Box flexDirection="column" paddingLeft={2} marginTop={0}>
+                    {agent.recentOutput.length > 0 ? (
+                      agent.recentOutput.slice(-3).map((line, idx) => (
+                        <Box key={idx}>
+                          <Text color="gray">│ </Text>
+                          <Text>{line.slice(0, 60)}</Text>
+                        </Box>
+                      ))
+                    ) : (
+                      <Box>
+                        <Text color="gray">│ </Text>
+                        <Text dimColor italic>Waiting for output...</Text>
                       </Box>
-                    ))
-                  ) : (
-                    <Box paddingLeft={2}>
-                      <Text dimColor>│ Waiting for output...</Text>
-                    </Box>
-                  )}
+                    )}
+                  </Box>
                 </Box>
               );
             })}
-            <Box borderStyle="single" borderColor="gray" paddingX={1} marginTop={1}>
-              <Text color="green">●</Text>
-              <Text> {available}/{total} slots available</Text>
+
+            {/* Slots available */}
+            <Box marginTop={1} gap={1}>
+              <Badge color="green">{available}/{total}</Badge>
+              <Text>slots available</Text>
             </Box>
           </Box>
         )}
