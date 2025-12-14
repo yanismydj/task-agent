@@ -13,10 +13,10 @@ const logger = createChildLogger({ module: 'webhook-handler' });
 // Trigger labels - adding these labels to an issue triggers the corresponding action
 // Labels are matched case-insensitively
 const TRIGGER_LABELS: Record<string, 'refine' | 'consolidate' | 'execute' | 'plan'> = {
-  'clarify': 'refine',        // Triggers TicketRefinerAgent (clarifying questions)
+  'ta:clarify': 'refine',     // Triggers TicketRefinerAgent (clarifying questions)
   'refine': 'consolidate',    // Triggers DescriptionConsolidatorAgent (rewrite description)
-  'work': 'execute',          // Triggers CodeExecutorAgent (Claude Code)
-  'plan': 'plan',             // Triggers PlannerAgent (Claude Code in plan mode)
+  'ta:work': 'execute',       // Triggers CodeExecutorAgent (Claude Code)
+  'ta:plan': 'plan',          // Triggers PlannerAgent (Claude Code in plan mode)
 };
 
 // Helper to check if a comment is from TaskAgent (using user ID)
@@ -101,7 +101,7 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
     return;
   }
 
-  // Check for trigger labels (clarify, refine, work)
+  // Check for trigger labels (ta:clarify, refine, ta:work, ta:plan)
   const labels = data.labels || [];
   for (const label of labels) {
     const labelNameLower = label.name.toLowerCase();
@@ -132,8 +132,8 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
       queueScheduler.clearAwaitingResponse(data.id);
 
       // Enqueue the task with appropriate inputData
-      // For 'clarify' label, pass forceAskQuestions to ensure questions are asked
-      const inputData = labelNameLower === 'clarify' ? { forceAskQuestions: true } : undefined;
+      // For 'ta:clarify' label, pass forceAskQuestions to ensure questions are asked
+      const inputData = labelNameLower === 'ta:clarify' ? { forceAskQuestions: true } : undefined;
 
       linearQueue.enqueue({
         ticketId: data.id,
@@ -247,6 +247,8 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
   }
 
   // Map mention commands to task types
+  // Note: @mention commands are kept as-is (clarify, plan, work) for ease of use
+  // These map to the same internal task types as the ta:* labels
   const taskTypeMap = {
     'plan': 'plan',            // Uses PlannerAgent (Claude Code in plan mode)
     'clarify': 'refine',       // Uses TicketRefinerAgent
