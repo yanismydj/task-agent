@@ -204,7 +204,7 @@ IMPORTANT INSTRUCTIONS:
 2. Implement the minimal changes needed to address the ticket
 3. Write tests if appropriate for the changes
 4. Commit your changes with a clear message referencing ${ticket.identifier}
-5. Create a draft pull request with:
+5. Create a pull request with:
    - Title: "<brief description>"
    - Body: Summary of changes and link to the ticket
 6. Branch name should follow pattern: ${constraints.branchNaming}
