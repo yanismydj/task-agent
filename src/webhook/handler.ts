@@ -60,14 +60,6 @@ async function withTimeout<T>(
   });
 }
 
-// Map Linear priority (0-4) to our priority type
-function mapPriority(linearPriority: number): 0 | 1 | 2 | 3 | 4 {
-  if (linearPriority >= 0 && linearPriority <= 4) {
-    return linearPriority as 0 | 1 | 2 | 3 | 4;
-  }
-  return 3; // Default to medium
-}
-
 /**
  * Handle issue updates from webhook
  * This is called when an issue is modified in Linear
@@ -114,58 +106,17 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
     return;
   }
 
-  // Skip if issue is assigned (manual work)
-  if (data.assignee) {
-    logger.debug({ issueId: data.identifier }, 'Ignoring assigned issue');
-    return;
-  }
-
-  // Skip if issue is completed or cancelled
+  // Clear awaiting response state for completed/cancelled issues
   if (data.state.type === 'completed' || data.state.type === 'canceled') {
-    logger.debug({ issueId: data.identifier, state: data.state.name }, 'Ignoring completed/cancelled issue');
+    logger.debug({ issueId: data.identifier, state: data.state.name }, 'Issue completed/cancelled - clearing awaiting state');
     queueScheduler.clearAwaitingResponse(data.id);
     return;
   }
 
-  // Check if we already have an active task for this ticket
-  // Note: We still check hasAnyActiveTask to avoid duplicate processing of the same webhook
-  // But we removed wasRecentlyProcessed - that was blocking legitimate re-evaluations
-  if (linearQueue.hasAnyActiveTask(data.id)) {
-    logger.debug({ issueId: data.identifier }, 'Already have active task for this issue');
-    return;
-  }
-
-  // NOTE: We intentionally do NOT check wasRecentlyProcessed here anymore.
-  // The 5-minute blocking window was preventing legitimate re-evaluations after Q&A.
-  // The scheduler still uses it to prevent polling duplicates.
-
-  // Check for TaskAgent labels to determine if we should process
-  const hasTaskAgentLabel = data.labels?.some(
-    (l) => l.name === 'task-agent' || l.name.startsWith('ta:')
-  );
-
-  // For tickets with TaskAgent labels awaiting response, check if something changed
-  const waitingLabel = data.labels?.find(
-    (l) => l.name === 'ta:pending-approval' || l.name === 'ta:awaiting-response'
-  );
-
-  if (waitingLabel) {
-    // Already waiting - the comment handler will handle responses
-    logger.debug({ issueId: data.identifier, label: waitingLabel.name }, 'Issue is waiting for response');
-    return;
-  }
-
-  // If no TaskAgent labels and we don't have active work, consider for evaluation
-  if (!hasTaskAgentLabel) {
-    logger.info({ issueId: data.identifier }, 'New/updated issue detected via webhook, enqueueing for evaluation');
-
-    linearQueue.enqueue({
-      ticketId: data.id,
-      ticketIdentifier: data.identifier,
-      taskType: 'evaluate',
-      priority: mapPriority(data.priority),
-    });
-  }
+  // MENTION-TRIGGERED MODE: Do NOT auto-evaluate issues
+  // Users must use @taskAgent commands in comments to trigger actions
+  // This handler only caches ticket data and handles unblocking
+  logger.debug({ issueId: data.identifier }, 'Issue updated - cached (mention-triggered mode, no auto-evaluation)');
 }
 
 /**

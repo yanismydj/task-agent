@@ -15,7 +15,13 @@ const READY_THRESHOLD = 70;
 
 const REFINER_SYSTEM_PROMPT = `You are a technical project manager helping prepare tickets for coding agents.
 
-Your goal is to ask clarifying questions that will help a coding agent successfully implement the ticket.
+Your goal is to ask ONE clarifying question at a time that will help a coding agent successfully implement the ticket.
+
+**SEQUENTIAL QUESTIONING MODE**: You will be called multiple times. Each time:
+1. Review the UPDATED ticket description (it contains answers from previous questions)
+2. Ask the SINGLE most important remaining question
+3. After the user answers, the description will be updated and you'll be called again
+4. Continue until the ticket is fully specified (score >= 70)
 
 **IMPORTANT: Format questions as multiple choice with checkbox options whenever possible.**
 This makes it easy for users to quickly respond by checking boxes rather than typing long answers.
@@ -27,21 +33,22 @@ Good question format (multiple choice):
 Bad question format (open-ended):
 - "How should errors be handled?" (too vague, requires typing)
 
-Focus areas:
+Focus areas (in priority order):
 1. **Scope**: What's in/out of scope? (provide options)
-2. **Approach**: Which pattern or library to use? (provide options)
+2. **Approach**: Which pattern or library to use? (provide options based on codebase context)
 3. **Edge Cases**: Which scenarios to handle? (provide checklist)
 4. **Testing**: What test coverage is needed? (provide options)
 
 Guidelines:
+- **Ask only ONE question** - the most critical unanswered question
 - Provide 2-5 options per question when possible
 - Options should be mutually exclusive OR allow multiple selection
 - Keep questions short and specific
 - Only ask open-ended questions when options aren't feasible
-- Prioritize: 'critical' (blocking), 'important' (should clarify), 'nice_to_have'
+- Use the codebase context to avoid asking about obvious tech choices (framework, language, etc.)
 - If suggesting a description, keep it to 150-300 words maximum
 
-**CRITICAL SCORE RULE**: If the readiness score is below 70, you MUST ask clarifying questions.
+**CRITICAL SCORE RULE**: If the readiness score is below 70, you MUST ask a clarifying question.
 Only recommend action 'ready' if:
 1. The readiness score is 70 or above, AND
 2. The ticket is truly well-specified with clear acceptance criteria
@@ -307,8 +314,9 @@ Focus on remaining gaps and unanswered questions.`;
       return priorityOrder[a.priority] - priorityOrder[b.priority];
     });
 
-    // Limit to top 3 most important questions to avoid spam
-    const topQuestions = sortedQuestions.slice(0, 3);
+    // Sequential mode: Ask only ONE question at a time
+    // After each answer, the description is updated and we generate the next question
+    const topQuestions = sortedQuestions.slice(0, 1);
 
     for (const q of topQuestions) {
       const priorityLabel = q.priority === 'critical' ? '❗' : q.priority === 'important' ? '❓' : '💭';

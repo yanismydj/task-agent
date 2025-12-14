@@ -349,15 +349,63 @@ export class QueueProcessor {
 
   private async handleRefine(task: LinearQueueItem): Promise<void> {
     // Use cache-first lookup to reduce API calls
-    const ticket = await linearClient.getTicketCached(task.ticketId);
+    let ticket = await linearClient.getTicketCached(task.ticketId);
     if (!ticket) {
       linearQueue.fail(task.id, 'Ticket not found');
       return;
     }
 
+    // GUARD: Don't ask more questions if ticket is already pending approval or in a terminal state
+    // This prevents race conditions where a delayed checkbox answer triggers refinement
+    // after approval has already been requested
+    const isPendingApproval = ticket.labels.some(l => l.name === 'ta:pending-approval');
+    const isTerminalState = ticket.labels.some(l =>
+      ['ta:approved', 'ta:completed', 'ta:failed', 'ta:blocked', 'task-agent'].includes(l.name)
+    );
+
+    if (isPendingApproval || isTerminalState) {
+      const blockingLabel = ticket.labels.find(l =>
+        l.name === 'ta:pending-approval' || l.name === 'ta:approved' ||
+        l.name === 'ta:completed' || l.name === 'ta:failed' ||
+        l.name === 'ta:blocked' || l.name === 'task-agent'
+      );
+      logger.info(
+        { ticketId: task.ticketIdentifier, label: blockingLabel?.name },
+        'Skipping refinement - ticket already in approval/terminal state'
+      );
+      linearQueue.complete(task.id, { reason: 'already_past_refinement', label: blockingLabel?.name });
+      return;
+    }
+
+    // Use cached comments if available
+    const comments = await linearClient.getCommentsCached(task.ticketId);
+
+    // SEQUENTIAL MODE: Consolidate any answered Q&A into the description BEFORE generating the next question
+    // This ensures each question is asked with full context from previous answers
+    const consolidated = await this.maybeConsolidateDescription(
+      task.ticketId,
+      task.ticketIdentifier,
+      ticket.title,
+      ticket.description || '',
+      comments
+    );
+
+    // If consolidation happened, refetch the ticket with updated description
+    if (consolidated) {
+      ticket = await linearClient.getTicketCached(task.ticketId, 0); // Force refresh (maxAgeSeconds=0)
+      if (!ticket) {
+        linearQueue.fail(task.id, 'Ticket not found after consolidation');
+        return;
+      }
+      logger.info(
+        { ticketId: task.ticketIdentifier },
+        'Description updated with previous answers before generating next question'
+      );
+    }
+
     const readiness = task.inputData?.readiness as ReadinessScorerOutput | undefined;
     if (!readiness) {
-      // Need to re-evaluate first
+      // Need to re-evaluate first (will see the consolidated description)
       linearQueue.enqueue({
         ticketId: task.ticketId,
         ticketIdentifier: task.ticketIdentifier,
@@ -367,9 +415,6 @@ export class QueueProcessor {
       linearQueue.complete(task.id, { reason: 'missing_readiness' });
       return;
     }
-
-    // Use cached comments if available
-    const comments = await linearClient.getCommentsCached(task.ticketId);
 
     // Build dual context from repo summary and Linear tickets
     // This helps the refiner ask smart questions instead of asking about obvious tech choices
