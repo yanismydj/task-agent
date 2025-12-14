@@ -193,8 +193,9 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
         env: {
           ...process.env,
           ANTHROPIC_API_KEY: config.anthropic.apiKey,
+          CLAUDE_FLOW_NON_INTERACTIVE: 'true',
         },
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: ['ignore', 'pipe', 'pipe'], // ignore stdin to prevent hanging
       });
 
       const processEntry: RunningProcess = {
