@@ -395,11 +395,7 @@ ${colors.bold}Creating a Linear OAuth Application:${colors.reset}
   3. ${colors.bold}Callback URLs:${colors.reset}
      Add this URL: ${colors.cyan}${oauthCallbackUrl}${colors.reset}
 
-  4. ${colors.bold}Actor (IMPORTANT):${colors.reset}
-     Select ${colors.bold}"Application"${colors.reset} to create a dedicated bot user for TaskAgent.
-     This makes TaskAgent appear as a separate user in Linear, not as you.
-
-  5. ${colors.bold}Webhooks:${colors.reset} ☑ Check this box to enable webhooks
+  4. ${colors.bold}Webhooks:${colors.reset} ☑ Check this box to enable webhooks
      This will reveal additional options:
 
      ${colors.bold}Webhook URL:${colors.reset} ${colors.cyan}${webhookUrl}${colors.reset}
@@ -413,7 +409,7 @@ ${colors.bold}Creating a Linear OAuth Application:${colors.reset}
        ☑ Comments
        ☑ Emoji reactions
 
-  6. Click "${colors.bold}Create${colors.reset}" and copy the ${colors.bold}Client ID${colors.reset} and ${colors.bold}Client Secret${colors.reset}
+  5. Click "${colors.bold}Create${colors.reset}" and copy the ${colors.bold}Client ID${colors.reset} and ${colors.bold}Client Secret${colors.reset}
 
 ${colors.dim}Note: TaskAgent manages ngrok automatically when the daemon is running.${colors.reset}
 `);
