@@ -37,3 +37,4 @@ const { waitUntilExit } = render(<App />);
 
 await waitUntilExit();
 cleanup();
+process.exit(0);
