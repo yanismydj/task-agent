@@ -9,6 +9,7 @@
 
 import React from 'react';
 import { render } from 'ink';
+import { execSync } from 'node:child_process';
 import { App } from './setup/App.js';
 
 // Check if we're in an interactive terminal
@@ -25,8 +26,21 @@ const clearScreen = '\x1b[2J\x1b[H';
 
 process.stdout.write(enterAltScreen + clearScreen);
 
-// Ensure we restore the terminal on exit
-const cleanup = () => process.stdout.write(leaveAltScreen);
+// Kill any ngrok processes started by setup
+const killNgrok = () => {
+  try {
+    // Kill ngrok processes listening on port 4847 (our webhook port)
+    execSync('pkill -f "ngrok http 4847"', { stdio: 'ignore' });
+  } catch {
+    // Ignore errors - ngrok might not be running
+  }
+};
+
+// Ensure we restore the terminal and clean up on exit
+const cleanup = () => {
+  process.stdout.write(leaveAltScreen);
+  killNgrok();
+};
 process.on('exit', cleanup);
 process.on('SIGINT', () => {
   cleanup();
