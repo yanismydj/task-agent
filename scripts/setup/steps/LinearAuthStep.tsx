@@ -38,8 +38,10 @@ export const LinearAuthStep: React.FC<LinearAuthStepProps> = ({
 
     try {
       // Use ngrok URL for redirect if available
+      // Ngrok forwards to port 4847, so we need to listen on that port for the callback
       const redirectUri = ngrokUrl ? `${ngrokUrl}/oauth/callback` : undefined;
-      const auth = new LinearAuth({ clientId, clientSecret, redirectUri });
+      const callbackPort = ngrokUrl ? 4847 : undefined;
+      const auth = new LinearAuth({ clientId, clientSecret, redirectUri, callbackPort });
 
       // Check if we already have a valid token
       if (auth.hasValidToken()) {

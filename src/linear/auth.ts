@@ -43,6 +43,7 @@ interface LinearAuthConfig {
   clientSecret: string;
   tokenStorePath?: string;
   redirectUri?: string;
+  callbackPort?: number;
 }
 
 export class LinearAuth {
@@ -50,6 +51,7 @@ export class LinearAuth {
   private clientSecret: string;
   private tokenStorePath: string;
   private redirectUri: string;
+  private callbackPort: number;
   private tokenData: TokenData | null = null;
 
   constructor(config: LinearAuthConfig) {
@@ -57,6 +59,7 @@ export class LinearAuth {
     this.clientSecret = config.clientSecret;
     this.tokenStorePath = config.tokenStorePath || getTokenPath();
     this.redirectUri = config.redirectUri || DEFAULT_REDIRECT_URI;
+    this.callbackPort = config.callbackPort || CALLBACK_PORT;
 
     // Migrate from legacy path if needed
     const legacyPath = getLegacyTokenPath();
@@ -209,7 +212,7 @@ export class LinearAuth {
   private waitForCallback(expectedState: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const server = http.createServer((req, res) => {
-        const url = new URL(req.url || '', `http://localhost:${CALLBACK_PORT}`);
+        const url = new URL(req.url || '', `http://localhost:${this.callbackPort}`);
 
         if (url.pathname !== CALLBACK_PATH) {
           res.writeHead(404);
@@ -262,8 +265,8 @@ export class LinearAuth {
         resolve(code);
       });
 
-      server.listen(CALLBACK_PORT, () => {
-        logger.info({ port: CALLBACK_PORT }, 'OAuth callback server started');
+      server.listen(this.callbackPort, () => {
+        logger.info({ port: this.callbackPort }, 'OAuth callback server started');
       });
 
       // Timeout after 5 minutes
