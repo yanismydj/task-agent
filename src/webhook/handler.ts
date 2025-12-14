@@ -6,6 +6,7 @@ import { linearCache } from '../linear/cache.js';
 import { descriptionApprovalManager } from '../queue/description-approvals.js';
 import { linearClient } from '../linear/client.js';
 import { parseMention, getHelpText } from '../utils/mention-parser.js';
+import { sessionStorage } from '../sessions/storage.js';
 import type { WebhookIssueData, WebhookCommentData, WebhookReactionData, WebhookAgentSessionData, WebhookHandlers } from './server.js';
 
 const logger = createChildLogger({ module: 'webhook-handler' });
@@ -135,7 +136,36 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
       // Enqueue the task with appropriate inputData
       // For clarify label, pass forceAskQuestions to ensure questions are asked
       const isClarifyLabel = labelNameLower === 'clarify';
-      const inputData = isClarifyLabel ? { forceAskQuestions: true } : undefined;
+      const isWorkLabel = labelNameLower === 'work';
+
+      let inputData: Record<string, unknown> | undefined;
+
+      if (isClarifyLabel) {
+        inputData = { forceAskQuestions: true };
+      } else if (isWorkLabel) {
+        // Check if this is a restart scenario - look for previous work sessions
+        const previousSessions = sessionStorage.listAll(data.id, 10);
+        const hasFailedOrCompletedSessions = previousSessions.some(
+          s => s.status === 'failed' || s.status === 'completed' || s.status === 'interrupted'
+        );
+
+        if (hasFailedOrCompletedSessions && previousSessions.length > 0) {
+          logger.info(
+            { issueId: data.identifier, sessionCount: previousSessions.length },
+            'Detected restart scenario - previous work exists'
+          );
+
+          // Get the most recent session's timestamp as the cutoff for new comments
+          const mostRecentSession = previousSessions[0];
+          if (mostRecentSession) {
+            inputData = {
+              isRestart: true,
+              previousSessionTimestamp: mostRecentSession.createdAt.toISOString(),
+              previousSessionStatus: mostRecentSession.status,
+            };
+          }
+        }
+      }
 
       linearQueue.enqueue({
         ticketId: data.id,
@@ -145,7 +175,7 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
         inputData,
       });
 
-      logger.info({ issueId: data.identifier, taskType }, 'Enqueued task from trigger label');
+      logger.info({ issueId: data.identifier, taskType, isRestart: inputData?.isRestart }, 'Enqueued task from trigger label');
 
       // Only process one trigger label per update
       return;
