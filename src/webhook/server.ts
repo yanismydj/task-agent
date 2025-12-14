@@ -134,6 +134,23 @@ export class WebhookServer {
     // Linear sends signature as: linear-signature: <hex>
     const actualSignature = signature.replace('linear-signature=', '').trim();
 
+    // Debug logging to diagnose signature mismatches
+    if (expectedSignature !== actualSignature) {
+      logger.debug({
+        expectedLength: expectedSignature.length,
+        actualLength: actualSignature.length,
+        expectedPrefix: expectedSignature.substring(0, 8),
+        actualPrefix: actualSignature.substring(0, 8),
+        rawSignature: signature.substring(0, 30),
+        secretLength: this.signingSecret.length,
+      }, 'Webhook signature mismatch details');
+    }
+
+    // Use timingSafeEqual only if lengths match, otherwise return false
+    if (Buffer.from(expectedSignature).length !== Buffer.from(actualSignature).length) {
+      return false;
+    }
+
     return crypto.timingSafeEqual(
       Buffer.from(expectedSignature),
       Buffer.from(actualSignature)
