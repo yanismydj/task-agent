@@ -85,24 +85,32 @@ export const NgrokStep: React.FC<NgrokStepProps> = ({ onComplete }) => {
   const startNgrok = () => {
     setState('starting');
 
+    // Start ngrok in detached mode so it keeps running
     const ngrokProc = spawn('ngrok', ['http', WEBHOOK_PORT, '--log=stdout'], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
 
+    // Unref so the parent process can exit independently
+    ngrokProc.unref();
+
     const timeout = setTimeout(() => {
-      ngrokProc.kill();
       setError('Timed out waiting for ngrok URL');
       setState('error');
     }, 15000);
 
+    let urlFound = false;
+
     ngrokProc.stdout?.on('data', (data: Buffer) => {
+      if (urlFound) return;
       const text = data.toString();
 
       // Try to match URL from log output
       const urlMatch = text.match(/url=(https:\/\/[^\s]+\.ngrok[^\s]*)/);
       if (urlMatch && urlMatch[1]) {
+        urlFound = true;
         clearTimeout(timeout);
-        ngrokProc.kill();
+        // DON'T kill ngrok - keep it running for OAuth callback!
         setNgrokUrl(urlMatch[1]);
         setState('ready');
         return;
@@ -111,8 +119,9 @@ export const NgrokStep: React.FC<NgrokStepProps> = ({ onComplete }) => {
       // Try JSON format
       const jsonUrlMatch = text.match(/"URL":"(https:\/\/[^"]+)"/);
       if (jsonUrlMatch && jsonUrlMatch[1]) {
+        urlFound = true;
         clearTimeout(timeout);
-        ngrokProc.kill();
+        // DON'T kill ngrok - keep it running for OAuth callback!
         setNgrokUrl(jsonUrlMatch[1]);
         setState('ready');
         return;
