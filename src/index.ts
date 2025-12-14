@@ -78,15 +78,23 @@ async function main() {
     terminalUI.start();
   }
 
-  // Start ngrok during initialization if webhooks are enabled
-  // Update splash screen status to show ngrok initialization
+  // Start ngrok during initialization if webhooks are enabled (unless using custom domain)
   if (config.webhook.enabled) {
-    if (isInteractiveMode) {
-      terminalUI.setInitStatus('Starting ngrok tunnel...');
-    }
-    await startNgrok(config.webhook.port);
-    if (isInteractiveMode) {
-      terminalUI.setInitStatus('Ngrok tunnel established');
+    if (config.webhook.ngrokDomain) {
+      // Using custom ngrok domain - user manages ngrok externally
+      if (isInteractiveMode) {
+        terminalUI.setInitStatus(`Using ngrok domain: ${config.webhook.ngrokDomain}`);
+      }
+      logger.info({ domain: config.webhook.ngrokDomain }, 'Using custom ngrok domain (managed externally)');
+    } else {
+      // Start ngrok automatically
+      if (isInteractiveMode) {
+        terminalUI.setInitStatus('Starting ngrok tunnel...');
+      }
+      await startNgrok(config.webhook.port);
+      if (isInteractiveMode) {
+        terminalUI.setInitStatus('Ngrok tunnel established');
+      }
     }
   }
 
@@ -147,8 +155,8 @@ async function main() {
     clearInterval(heartbeatInterval);
     clearInterval(healthCheckInterval);
 
-    // Stop ngrok tunnel
-    if (config.webhook.enabled) {
+    // Stop ngrok tunnel (only if we started it, not if using custom domain)
+    if (config.webhook.enabled && !config.webhook.ngrokDomain) {
       stopNgrok();
     }
 

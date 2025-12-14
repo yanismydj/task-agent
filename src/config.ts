@@ -33,6 +33,7 @@ const ConfigSchema = z.object({
     enabled: z.boolean().default(false),
     port: z.number().int().min(1).max(65535).default(4847),
     allowUnsigned: z.boolean().default(false), // Only for development - allows unsigned webhooks
+    ngrokDomain: z.string().optional(), // Custom ngrok domain (e.g., "yan-od.ngrok.dev") - if set, ngrok is managed externally
   }),
   isDevelopment: z.boolean().default(false),
   github: z.object({
@@ -102,6 +103,7 @@ function loadConfig(): Config {
       enabled: process.env['WEBHOOK_ENABLED'] === 'true',
       port: parseInt(process.env['WEBHOOK_PORT'] || '4847', 10),
       allowUnsigned: process.env['WEBHOOK_ALLOW_UNSIGNED'] === 'true',
+      ngrokDomain: process.env['NGROK_CUSTOM_DOMAIN'] || undefined,
     },
     isDevelopment: process.env['NODE_ENV'] !== 'production',
     github: {
