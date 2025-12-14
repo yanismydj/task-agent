@@ -213,6 +213,7 @@ export const App: React.FC = () => {
           <LinearAuthStep
             clientId={state.linearClientId}
             clientSecret={state.linearClientSecret}
+            ngrokUrl={state.ngrokUrl}
             onComplete={goToNextStep}
           />
         </StepContainer>

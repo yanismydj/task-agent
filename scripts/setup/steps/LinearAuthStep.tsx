@@ -6,6 +6,7 @@ import { LinearAuth } from '../../../src/linear/auth.js';
 interface LinearAuthStepProps {
   clientId: string;
   clientSecret: string;
+  ngrokUrl: string | null;
   onComplete: () => void;
 }
 
@@ -14,6 +15,7 @@ type AuthState = 'ready' | 'authorizing' | 'success' | 'error';
 export const LinearAuthStep: React.FC<LinearAuthStepProps> = ({
   clientId,
   clientSecret,
+  ngrokUrl,
   onComplete,
 }) => {
   const [authState, setAuthState] = useState<AuthState>('ready');
@@ -35,7 +37,9 @@ export const LinearAuthStep: React.FC<LinearAuthStepProps> = ({
     setError(null);
 
     try {
-      const auth = new LinearAuth({ clientId, clientSecret });
+      // Use ngrok URL for redirect if available
+      const redirectUri = ngrokUrl ? `${ngrokUrl}/oauth/callback` : undefined;
+      const auth = new LinearAuth({ clientId, clientSecret, redirectUri });
 
       // Check if we already have a valid token
       if (auth.hasValidToken()) {

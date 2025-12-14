@@ -42,18 +42,21 @@ interface LinearAuthConfig {
   clientId: string;
   clientSecret: string;
   tokenStorePath?: string;
+  redirectUri?: string;
 }
 
 export class LinearAuth {
   private clientId: string;
   private clientSecret: string;
   private tokenStorePath: string;
+  private redirectUri: string;
   private tokenData: TokenData | null = null;
 
   constructor(config: LinearAuthConfig) {
     this.clientId = config.clientId;
     this.clientSecret = config.clientSecret;
     this.tokenStorePath = config.tokenStorePath || getTokenPath();
+    this.redirectUri = config.redirectUri || DEFAULT_REDIRECT_URI;
 
     // Migrate from legacy path if needed
     const legacyPath = getLegacyTokenPath();
@@ -194,7 +197,7 @@ export class LinearAuth {
   private buildAuthUrl(state: string): string {
     const params = new URLSearchParams({
       client_id: this.clientId,
-      redirect_uri: DEFAULT_REDIRECT_URI,
+      redirect_uri: this.redirectUri,
       response_type: 'code',
       scope: SCOPES.join(','),
       state,
@@ -283,7 +286,7 @@ export class LinearAuth {
         grant_type: 'authorization_code',
         client_id: this.clientId,
         client_secret: this.clientSecret,
-        redirect_uri: DEFAULT_REDIRECT_URI,
+        redirect_uri: this.redirectUri,
         code,
       }),
     });
