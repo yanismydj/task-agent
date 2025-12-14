@@ -898,6 +898,39 @@ export class QueueProcessor {
       return;
     }
 
+    // Extract plan content from the output if available
+    // The planner output contains the raw conversation which may include a plan
+    const planContent = this.extractPlanFromOutput(result.data.output);
+
+    // Update ticket description with plan if we extracted one
+    if (planContent) {
+      logger.info(
+        { ticketId: task.ticketIdentifier, planLength: planContent.length },
+        'Updating ticket description with generated plan'
+      );
+
+      const updatedDescription = `# Implementation Plan
+
+${planContent}
+
+---
+
+# Original Description
+
+${ticket.description || ''}`;
+
+      await linearClient.updateDescription(task.ticketId, updatedDescription);
+
+      await linearClient.addComment(
+        task.ticketId,
+        '✅ Planning complete! I\'ve updated the ticket description with the implementation plan.\n\nYou can now use `@taskAgent work` to start implementation.'
+      );
+
+      linearQueue.complete(task.id, result.data);
+      logger.info({ ticketId: task.ticketIdentifier }, 'Planning mode completed with plan');
+      return;
+    }
+
     // Post questions as individual comments if any were generated
     const questions = result.data.questions || [];
     if (questions.length > 0) {
@@ -918,10 +951,10 @@ export class QueueProcessor {
 
       this.callbacks.onStateChange?.(task.ticketId, 'awaiting_planning_response');
     } else {
-      // No questions - planning complete
+      // No questions and no plan - planning complete but empty
       logger.info(
         { ticketId: task.ticketIdentifier },
-        'Planning mode generated no questions - ticket may be ready'
+        'Planning mode generated no questions or plan - ticket may be ready'
       );
 
       await linearClient.addComment(
@@ -1198,6 +1231,66 @@ ${ticket.description || ''}`;
 
     await linearClient.addComment(task.ticketId, commentBody);
     logger.info({ ticketId: task.ticketIdentifier }, 'Approval requested');
+  }
+
+  /**
+   * Extract plan content from planner output.
+   * Claude Code's plan mode may generate a structured plan in its output.
+   * This method extracts markdown content that looks like a plan.
+   */
+  private extractPlanFromOutput(output: string): string | null {
+    if (!output || output.trim().length === 0) {
+      return null;
+    }
+
+    // Try to extract plan from stream-json format output
+    // The output may contain JSON lines with assistant messages
+    const lines = output.split('\n');
+    let accumulatedText = '';
+
+    for (const line of lines) {
+      try {
+        const json = JSON.parse(line);
+        // Look for assistant messages with text content
+        if (json.type === 'assistant' && json.message?.content) {
+          for (const block of json.message.content) {
+            if (block.type === 'text' && block.text) {
+              accumulatedText += block.text + '\n';
+            }
+          }
+        } else if (json.type === 'content_block_delta' && json.delta?.text) {
+          accumulatedText += json.delta.text;
+        }
+      } catch {
+        // Not JSON, skip
+        continue;
+      }
+    }
+
+    // If we extracted meaningful text content, check if it looks like a plan
+    const trimmed = accumulatedText.trim();
+    if (trimmed.length > 100) {
+      // Check if it has plan-like structure (headers, lists, etc.)
+      const hasPlanStructure =
+        trimmed.includes('##') || // Has markdown headers
+        trimmed.includes('**') || // Has bold text
+        (trimmed.match(/^[-*]\s/gm) || []).length >= 3 || // Has multiple list items
+        trimmed.toLowerCase().includes('requirement') ||
+        trimmed.toLowerCase().includes('implementation') ||
+        trimmed.toLowerCase().includes('acceptance criteria');
+
+      if (hasPlanStructure) {
+        logger.debug({ length: trimmed.length }, 'Extracted plan from output');
+        return trimmed;
+      }
+    }
+
+    // Fallback: if output is plain text and substantial, use it
+    if (output.trim().length > 200 && !output.includes('{') && !output.includes('[')) {
+      return output.trim();
+    }
+
+    return null;
   }
 
   /**
