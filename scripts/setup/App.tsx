@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { Box, useApp } from 'ink';
+import { Box, Text, useApp } from 'ink';
 import { WelcomeScreen } from './components/WelcomeScreen.js';
 import { StepContainer } from './components/StepContainer.js';
 import { TargetRepoStep } from './steps/TargetRepoStep.js';
@@ -7,11 +7,13 @@ import { WorkspaceSlugStep } from './steps/WorkspaceSlugStep.js';
 import { NgrokStep } from './steps/NgrokStep.js';
 import { LinearOAuthStep } from './steps/LinearOAuthStep.js';
 import { LinearCredentialsStep } from './steps/LinearCredentialsStep.js';
+import { LinearAuthStep } from './steps/LinearAuthStep.js';
 import { LinearTeamStep } from './steps/LinearTeamStep.js';
 import { AnthropicStep } from './steps/AnthropicStep.js';
 import { GitHubStep } from './steps/GitHubStep.js';
 import { ConcurrencyStep } from './steps/ConcurrencyStep.js';
 import { CompleteStep } from './steps/CompleteStep.js';
+import { loadEnvFile } from './utils/env.js';
 
 export interface SetupState {
   // Repository
@@ -39,22 +41,26 @@ export interface SetupState {
   maxCodeExecutors: number;
 }
 
-const INITIAL_STATE: SetupState = {
-  workDir: '',
-  workspaceSlug: '',
-  linearClientId: '',
-  linearClientSecret: '',
-  linearWebhookSecret: '',
-  linearTeamId: '',
-  ngrokUrl: null,
-  anthropicApiKey: '',
-  anthropicModel: 'claude-sonnet-4-5',
-  githubRepo: '',
-  maxConcurrent: 5,
-  maxCodeExecutors: 1,
-};
+// Load existing .env values for idempotency
+function loadInitialState(): SetupState {
+  const env = loadEnvFile();
+  return {
+    workDir: env.get('AGENTS_WORK_DIR') || '',
+    workspaceSlug: '',  // Not stored in env, user needs to re-enter
+    linearClientId: env.get('LINEAR_CLIENT_ID') || '',
+    linearClientSecret: env.get('LINEAR_CLIENT_SECRET') || '',
+    linearWebhookSecret: env.get('LINEAR_WEBHOOK_SECRET') || '',
+    linearTeamId: env.get('LINEAR_TEAM_ID') || '',
+    ngrokUrl: null,  // Generated fresh each time
+    anthropicApiKey: env.get('ANTHROPIC_API_KEY') || '',
+    anthropicModel: env.get('ANTHROPIC_MODEL') || 'claude-sonnet-4-5',
+    githubRepo: env.get('GITHUB_REPO') || '',
+    maxConcurrent: parseInt(env.get('AGENTS_MAX_CONCURRENT') || '5', 10),
+    maxCodeExecutors: parseInt(env.get('AGENTS_MAX_CODE_EXECUTORS') || '1', 10),
+  };
+}
 
-const TOTAL_STEPS = 10;
+const TOTAL_STEPS = 11;
 
 type Step =
   | 'welcome'
@@ -63,6 +69,7 @@ type Step =
   | 'ngrok'
   | 'linear-oauth'
   | 'linear-credentials'
+  | 'linear-auth'
   | 'linear-team'
   | 'anthropic'
   | 'github'
@@ -76,6 +83,7 @@ const STEP_ORDER: Step[] = [
   'ngrok',
   'linear-oauth',
   'linear-credentials',
+  'linear-auth',
   'linear-team',
   'anthropic',
   'github',
@@ -86,7 +94,7 @@ const STEP_ORDER: Step[] = [
 export const App: React.FC = () => {
   const { exit } = useApp();
   const [currentStep, setCurrentStep] = useState<Step>('welcome');
-  const [state, setState] = useState<SetupState>(INITIAL_STATE);
+  const [state, setState] = useState<SetupState>(loadInitialState);
 
   const stepIndex = STEP_ORDER.indexOf(currentStep);
 
@@ -195,10 +203,25 @@ export const App: React.FC = () => {
         </StepContainer>
       );
 
-    case 'linear-team':
+    case 'linear-auth':
       return (
         <StepContainer
           step={6}
+          totalSteps={TOTAL_STEPS}
+          title="Linear Authorization"
+        >
+          <LinearAuthStep
+            clientId={state.linearClientId}
+            clientSecret={state.linearClientSecret}
+            onComplete={goToNextStep}
+          />
+        </StepContainer>
+      );
+
+    case 'linear-team':
+      return (
+        <StepContainer
+          step={7}
           totalSteps={TOTAL_STEPS}
           title="Linear Team"
           description="Select the team TaskAgent will work with"
@@ -217,7 +240,7 @@ export const App: React.FC = () => {
     case 'anthropic':
       return (
         <StepContainer
-          step={7}
+          step={8}
           totalSteps={TOTAL_STEPS}
           title="Anthropic API"
         >
@@ -235,7 +258,7 @@ export const App: React.FC = () => {
     case 'github':
       return (
         <StepContainer
-          step={8}
+          step={9}
           totalSteps={TOTAL_STEPS}
           title="GitHub Repository"
           description="The repository where agents will create branches and PRs"
@@ -254,7 +277,7 @@ export const App: React.FC = () => {
     case 'concurrency':
       return (
         <StepContainer
-          step={9}
+          step={10}
           totalSteps={TOTAL_STEPS}
           title="Agent Configuration"
         >
@@ -272,7 +295,7 @@ export const App: React.FC = () => {
     case 'complete':
       return (
         <StepContainer
-          step={10}
+          step={11}
           totalSteps={TOTAL_STEPS}
           title="Setup Complete"
         >

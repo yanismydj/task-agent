@@ -96,9 +96,8 @@ export const CompleteStep: React.FC<CompleteStepProps> = ({ state, onComplete })
       </Box>
 
       <Box marginTop={2} flexDirection="column">
-        <Text bold>Next steps:</Text>
-        <Text>  1. Run the OAuth flow: <Text color="cyan">npm run auth</Text></Text>
-        <Text>  2. Start TaskAgent: <Text color="cyan">npm run dev</Text></Text>
+        <Text bold>Next step:</Text>
+        <Text>  Start TaskAgent: <Text color="cyan">npm run dev</Text></Text>
       </Box>
 
       <Box marginTop={2}>
