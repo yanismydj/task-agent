@@ -303,7 +303,6 @@ export class QueueProcessor {
 
     // Determine next action based on readiness
     if (readiness.recommendedAction === 'block') {
-      await this.syncLabel(task.ticketId, 'ta:blocked');
       this.callbacks.onStateChange?.(task.ticketId, 'blocked', readiness);
       return;
     }
@@ -313,7 +312,6 @@ export class QueueProcessor {
     if (emojiReaction === 'approved') {
       // User explicitly approved - skip refinement and go straight to prompt generation
       logger.info({ ticketId: task.ticketIdentifier }, 'User approved via emoji - generating prompt');
-      await this.syncLabel(task.ticketId, 'ta:approved');
       this.callbacks.onStateChange?.(task.ticketId, 'approved', readiness);
 
       linearQueue.enqueue({
@@ -332,7 +330,6 @@ export class QueueProcessor {
 
     // Go through refinement - let the refiner decide if questions are needed
     // or if we should proceed directly to approval. This ensures consistent flow.
-    await this.syncLabel(task.ticketId, 'ta:needs-refinement');
     this.callbacks.onStateChange?.(task.ticketId, 'needs_refinement', readiness);
 
     // Enqueue refinement task - the refiner will ask questions if needed,
@@ -352,28 +349,6 @@ export class QueueProcessor {
     let ticket = await linearClient.getTicketCached(task.ticketId);
     if (!ticket) {
       linearQueue.fail(task.id, 'Ticket not found');
-      return;
-    }
-
-    // GUARD: Don't ask more questions if ticket is already pending approval or in a terminal state
-    // This prevents race conditions where a delayed checkbox answer triggers refinement
-    // after approval has already been requested
-    const isPendingApproval = ticket.labels.some(l => l.name === 'ta:pending-approval');
-    const isTerminalState = ticket.labels.some(l =>
-      ['ta:approved', 'ta:completed', 'ta:failed', 'ta:blocked', 'task-agent'].includes(l.name)
-    );
-
-    if (isPendingApproval || isTerminalState) {
-      const blockingLabel = ticket.labels.find(l =>
-        l.name === 'ta:pending-approval' || l.name === 'ta:approved' ||
-        l.name === 'ta:completed' || l.name === 'ta:failed' ||
-        l.name === 'ta:blocked' || l.name === 'task-agent'
-      );
-      logger.info(
-        { ticketId: task.ticketIdentifier, label: blockingLabel?.name },
-        'Skipping refinement - ticket already in approval/terminal state'
-      );
-      linearQueue.complete(task.id, { reason: 'already_past_refinement', label: blockingLabel?.name });
       return;
     }
 
@@ -452,12 +427,10 @@ export class QueueProcessor {
 
     if (refinement.action === 'ready') {
       await this.requestApproval(task, readiness);
-      await this.syncLabel(task.ticketId, 'ta:pending-approval');
       this.callbacks.onStateChange?.(task.ticketId, 'ready_for_approval');
 
       // Register that we're waiting for approval - webhook will trigger evaluation when user responds
       queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'approval');
-      // No need to enqueue check_response - webhooks will trigger evaluate when user reacts
     } else if (refinement.action === 'suggest_improvements') {
       // The refiner has suggested improvements to the description
       // Update the ticket with the improved description and proceed to approval
@@ -471,14 +444,11 @@ export class QueueProcessor {
 
       // Now request approval with the improved description
       await this.requestApproval(task, readiness);
-      await this.syncLabel(task.ticketId, 'ta:pending-approval');
       this.callbacks.onStateChange?.(task.ticketId, 'ready_for_approval');
 
       // Register that we're waiting for approval - webhook will trigger evaluation when user responds
       queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'approval');
-      // No need to enqueue check_response - webhooks will trigger evaluate when user reacts
     } else if (refinement.action === 'blocked') {
-      await this.syncLabel(task.ticketId, 'ta:blocked');
       this.callbacks.onStateChange?.(task.ticketId, 'blocked', { reason: refinement.blockerReason });
     } else {
       // Post questions - but first check if we've already asked questions without getting a response
@@ -489,10 +459,8 @@ export class QueueProcessor {
           { ticketId: task.ticketIdentifier },
           'Already have unanswered questions, waiting for human response'
         );
-        // Still set the label and register for response checking
-        await this.syncLabel(task.ticketId, 'ta:awaiting-response');
+        // Register for response checking
         queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
-        // No need to enqueue check_response - webhooks will trigger evaluate when human responds
       } else {
         // Post questions as individual comments
         const questionComments = ticketRefinerAgent.formatQuestionsAsComments(refinement);
@@ -544,21 +512,17 @@ export class QueueProcessor {
               await linearClient.addComment(task.ticketId, comment);
             }
 
-            await this.syncLabel(task.ticketId, 'ta:awaiting-response');
             this.callbacks.onStateChange?.(task.ticketId, 'awaiting_response');
 
             // Register that we're waiting for questions - webhook will trigger evaluate when human responds
             queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
-            // No need to enqueue check_response - webhooks will trigger evaluate
           } else {
             logger.info(
               { ticketId: task.ticketIdentifier },
               'All questions were duplicates - waiting for human response'
             );
             // All questions were duplicates - just wait for responses to existing questions
-            await this.syncLabel(task.ticketId, 'ta:awaiting-response');
             queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
-            // No need to enqueue check_response - webhooks will trigger evaluate
           }
         }
       }
@@ -675,7 +639,6 @@ export class QueueProcessor {
 
     if (!promptResult.success || !promptResult.data) {
       linearQueue.fail(task.id, promptResult.error || 'Prompt generation failed');
-      await this.syncLabel(task.ticketId, 'ta:failed');
       await linearClient.addComment(
         task.ticketId,
         `Failed to generate execution prompt: ${promptResult.error || 'Unknown error'}`
@@ -685,7 +648,6 @@ export class QueueProcessor {
 
     // Set issue to In Progress
     await linearClient.setIssueInProgress(task.ticketId);
-    await this.syncLabel(task.ticketId, 'task-agent');
 
     // Create agent session
     const session = await linearClient.createAgentSession(task.ticketId);
@@ -766,8 +728,6 @@ export class QueueProcessor {
       return;
     }
 
-    await this.syncLabel(task.ticketId, 'ta:generating-prompt');
-
     const input: AgentInput<PromptGeneratorInput> = {
       ticketId: task.ticketId,
       ticketIdentifier: task.ticketIdentifier,
@@ -788,7 +748,6 @@ export class QueueProcessor {
 
     if (!result.success || !result.data) {
       linearQueue.fail(task.id, result.error || 'Prompt generation failed');
-      await this.syncLabel(task.ticketId, 'ta:failed');
       this.callbacks.onStateChange?.(task.ticketId, 'failed');
       return;
     }
@@ -797,7 +756,6 @@ export class QueueProcessor {
 
     // Set issue to In Progress
     await linearClient.setIssueInProgress(task.ticketId);
-    await this.syncLabel(task.ticketId, 'task-agent');
 
     // Create agent session
     const session = await linearClient.createAgentSession(task.ticketId);
@@ -844,12 +802,6 @@ export class QueueProcessor {
 
   private async handleSyncState(task: LinearQueueItem): Promise<void> {
     const state = task.inputData?.state as string;
-    const label = task.inputData?.label as string | null;
-
-    if (label !== undefined) {
-      await this.syncLabel(task.ticketId, label);
-    }
-
     linearQueue.complete(task.id, { synced: true });
     this.callbacks.onStateChange?.(task.ticketId, state);
   }
@@ -895,7 +847,6 @@ export class QueueProcessor {
       const willRetry = claudeQueue.fail(task.id, error);
 
       if (!willRetry) {
-        await this.syncLabel(task.ticketId, 'ta:failed');
         if (task.agentSessionId) {
           await linearClient.errorAgentSession(task.agentSessionId, error);
           agentSessions.delete(task.ticketId);
@@ -918,7 +869,6 @@ export class QueueProcessor {
     claudeQueue.complete(task.id, result.data.prUrl ?? undefined);
 
     await linearClient.setIssueDone(task.ticketId);
-    await this.syncLabel(task.ticketId, 'ta:completed');
 
     if (task.agentSessionId) {
       const summary = result.data.prUrl
@@ -940,26 +890,6 @@ export class QueueProcessor {
   // ============================================================
   // Helper Methods
   // ============================================================
-
-  private async syncLabel(ticketId: string, newLabel: string | null): Promise<void> {
-    const allTaskAgentLabels = [
-      'ta:evaluating',
-      'ta:needs-refinement',
-      'ta:refining',
-      'ta:awaiting-response',
-      'ta:awaiting-description-approval',
-      'ta:pending-approval',
-      'ta:approved',
-      'ta:generating-prompt',
-      'task-agent',
-      'ta:completed',
-      'ta:failed',
-      'ta:blocked',
-    ];
-
-    // Use efficient single-API-call method instead of 12+ separate calls
-    await linearClient.syncTaskAgentLabel(ticketId, newLabel, allTaskAgentLabels);
-  }
 
   private async requestApproval(
     task: LinearQueueItem,

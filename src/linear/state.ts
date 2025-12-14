@@ -3,7 +3,6 @@ import os from 'node:os';
 import { config } from '../config.js';
 import { createChildLogger } from '../utils/logger.js';
 import { initializeAuth, getAuth } from './auth.js';
-import type { TicketInfo } from './types.js';
 
 const logger = createChildLogger({ module: 'linear-state' });
 
@@ -37,17 +36,11 @@ const logger = createChildLogger({ module: 'linear-state' });
  * 4. Clean up old "Agent Session:" issues in the State Project
  */
 
-// Label prefixes for TaskAgent state on tickets
-const LABEL_PREFIX = 'ta:';
-const READINESS_LABEL_PREFIX = 'readiness:';
-
 // State project for daemon metadata
 const STATE_PROJECT_NAME = 'TaskAgent State';
 const DAEMON_ISSUE_TITLE = 'Daemon Status';
 const AGENT_ISSUE_PREFIX = 'Agent Session:';
 const ERROR_ISSUE_PREFIX = 'Error:';
-
-export type TicketState = 'evaluated' | 'pending-approval' | 'working' | 'completed' | 'failed';
 
 interface DaemonStatus {
   pid: number;
@@ -79,7 +72,6 @@ interface ErrorReport {
 export class LinearStateManager {
   private client: LinearClient | null = null;
   private teamId: string;
-  private labelCache: Map<string, string> = new Map();
   private stateProjectId: string | null = null;
   private initialized = false;
 
@@ -355,57 +347,6 @@ export class LinearStateManager {
     return description;
   }
 
-  // ============ Ticket Labels (Readiness & State) ============
-
-  async getTicketState(ticket: TicketInfo): Promise<TicketState | null> {
-    const stateLabel = ticket.labels.find((l) =>
-      l.name.startsWith(LABEL_PREFIX) && !l.name.startsWith('ta:eval:')
-    );
-    if (!stateLabel) return null;
-    return stateLabel.name.replace(LABEL_PREFIX, '') as TicketState;
-  }
-
-  async getReadinessScore(ticket: TicketInfo): Promise<number | null> {
-    const readinessLabel = ticket.labels.find((l) => l.name.startsWith(READINESS_LABEL_PREFIX));
-    if (!readinessLabel) return null;
-    const score = parseInt(readinessLabel.name.replace(READINESS_LABEL_PREFIX, ''), 10);
-    return isNaN(score) ? null : score;
-  }
-
-  async setTicketState(ticketId: string, state: TicketState): Promise<void> {
-    await this.removeLabelsWithPrefix(ticketId, LABEL_PREFIX, ['ta:eval:']);
-    await this.addLabel(ticketId, `${LABEL_PREFIX}${state}`);
-    logger.info({ ticketId, state }, 'Set ticket state');
-  }
-
-  async setReadinessScore(ticketId: string, score: number): Promise<void> {
-    await this.removeLabelsWithPrefix(ticketId, READINESS_LABEL_PREFIX);
-    await this.addLabel(ticketId, `${READINESS_LABEL_PREFIX}${score}`);
-    logger.debug({ ticketId, score }, 'Set readiness score');
-  }
-
-  async needsEvaluation(ticket: TicketInfo): Promise<boolean> {
-    const hasReadiness = ticket.labels.some((l) => l.name.startsWith(READINESS_LABEL_PREFIX));
-    if (!hasReadiness) return true;
-
-    const evalLabel = ticket.labels.find((l) => l.name.startsWith('ta:eval:'));
-    if (!evalLabel) return true;
-
-    const evalTime = new Date(evalLabel.name.replace('ta:eval:', ''));
-    return ticket.updatedAt > evalTime;
-  }
-
-  async markEvaluated(ticketId: string): Promise<void> {
-    await this.removeLabelsWithPrefix(ticketId, 'ta:eval:');
-    await this.addLabel(ticketId, `ta:eval:${new Date().toISOString()}`);
-  }
-
-  async clearTicketState(ticketId: string): Promise<void> {
-    await this.removeLabelsWithPrefix(ticketId, LABEL_PREFIX);
-    await this.removeLabelsWithPrefix(ticketId, READINESS_LABEL_PREFIX);
-    logger.info({ ticketId }, 'Cleared ticket state');
-  }
-
   // ============ Private Helpers ============
 
   private async getStateIssue(title: string) {
@@ -448,77 +389,6 @@ export class LinearStateManager {
         stateId: targetState?.id,
       });
     }
-  }
-
-  private async addLabel(ticketId: string, labelName: string): Promise<void> {
-    const labelId = await this.getOrCreateLabel(labelName);
-    const client = await this.getClient();
-    const issue = await client.issue(ticketId);
-    const existingLabels = await issue.labels();
-    const existingIds = existingLabels.nodes.map((l) => l.id);
-
-    if (!existingIds.includes(labelId)) {
-      await client.updateIssue(ticketId, {
-        labelIds: [...existingIds, labelId],
-      });
-    }
-  }
-
-  private async removeLabelsWithPrefix(ticketId: string, prefix: string, excludePrefixes: string[] = []): Promise<void> {
-    const client = await this.getClient();
-    const issue = await client.issue(ticketId);
-    const existingLabels = await issue.labels();
-    const filteredIds = existingLabels.nodes
-      .filter((l) => {
-        if (!l.name.startsWith(prefix)) return true;
-        return excludePrefixes.some((exc) => l.name.startsWith(exc));
-      })
-      .map((l) => l.id);
-
-    if (filteredIds.length !== existingLabels.nodes.length) {
-      await client.updateIssue(ticketId, { labelIds: filteredIds });
-    }
-  }
-
-  private async getOrCreateLabel(labelName: string): Promise<string> {
-    const cached = this.labelCache.get(labelName);
-    if (cached) return cached;
-
-    const client = await this.getClient();
-    const team = await client.team(this.teamId);
-    const labels = await team.labels();
-    const existing = labels.nodes.find((l) => l.name === labelName);
-
-    if (existing) {
-      this.labelCache.set(labelName, existing.id);
-      return existing.id;
-    }
-
-    const result = await client.createIssueLabel({
-      teamId: this.teamId,
-      name: labelName,
-      color: this.getLabelColor(labelName),
-    });
-
-    const newLabel = await result.issueLabel;
-    if (!newLabel) throw new Error(`Failed to create label: ${labelName}`);
-
-    this.labelCache.set(labelName, newLabel.id);
-    return newLabel.id;
-  }
-
-  private getLabelColor(labelName: string): string {
-    if (labelName.startsWith('readiness:')) {
-      const score = parseInt(labelName.replace('readiness:', ''), 10);
-      if (score >= 80) return '#22c55e';
-      if (score >= 50) return '#eab308';
-      return '#ef4444';
-    }
-    if (labelName.includes('working')) return '#3b82f6';
-    if (labelName.includes('pending')) return '#f59e0b';
-    if (labelName.includes('completed')) return '#22c55e';
-    if (labelName.includes('failed')) return '#ef4444';
-    return '#6b7280';
   }
 }
 

@@ -5,7 +5,6 @@ import { config } from '../config.js';
 import { linearCache } from '../linear/cache.js';
 import { descriptionApprovalManager } from '../queue/description-approvals.js';
 import { linearClient } from '../linear/client.js';
-import { ticketStateMachine } from '../workflow/state-machine.js';
 import { parseMention, getHelpText } from '../utils/mention-parser.js';
 import type { WebhookIssueData, WebhookCommentData, WebhookReactionData, WebhookHandlers } from './server.js';
 
@@ -85,26 +84,6 @@ async function handleIssueUpdate(data: WebhookIssueData): Promise<void> {
     updatedAt: new Date(data.updatedAt),
     url: '',
   });
-
-  // Check for manual unblocking: if ticket was internally blocked but ta:blocked label was removed
-  const internalState = ticketStateMachine.getState(data.id);
-  const wasBlocked = internalState?.currentState === 'blocked';
-  const hasBlockedLabel = data.labels?.some((l) => l.name === 'ta:blocked');
-
-  if (wasBlocked && !hasBlockedLabel) {
-    logger.info(
-      { issueId: data.identifier },
-      'Blocked ticket label removed - unblocking and re-evaluating'
-    );
-    ticketStateMachine.transition(data.id, 'new', 'Manually unblocked via label removal');
-    linearQueue.enqueue({
-      ticketId: data.id,
-      ticketIdentifier: data.identifier,
-      taskType: 'evaluate',
-      priority: 2, // High priority - user took action
-    });
-    return;
-  }
 
   // Clear awaiting response state for completed/cancelled issues
   if (data.state.type === 'completed' || data.state.type === 'canceled') {
@@ -352,9 +331,6 @@ async function handleReactionCreate(data: WebhookReactionData): Promise<void> {
           '✅ Description has been updated based on your approval.'
         );
 
-        // Clear the awaiting-description-approval label
-        await linearClient.removeLabel(descriptionApproval.ticketId, 'ta:awaiting-description-approval');
-
       } catch (error) {
         logger.error(
           { ticketId: descriptionApproval.ticketIdentifier, error },
@@ -381,9 +357,6 @@ async function handleReactionCreate(data: WebhookReactionData): Promise<void> {
         descriptionApproval.ticketId,
         '❌ Description update rejected. Keeping the original description.'
       );
-
-      // Clear the awaiting-description-approval label
-      await linearClient.removeLabel(descriptionApproval.ticketId, 'ta:awaiting-description-approval');
     }
     return;
   }
