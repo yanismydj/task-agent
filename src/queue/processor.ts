@@ -419,9 +419,9 @@ export class QueueProcessor {
       readiness = readinessResult.data;
     }
 
-    // If forceAskQuestions is set (from "clarify" label), override readiness to force questions
+    // If forceAskQuestions is set (from "ta:clarify" label), override readiness to force questions
     if (forceAskQuestions) {
-      logger.info({ ticketId: task.ticketIdentifier }, 'Force asking questions (triggered via clarify label)');
+      logger.info({ ticketId: task.ticketIdentifier }, 'Force asking questions (triggered via ta:clarify label)');
       readiness = {
         ...readiness,
         ready: false,

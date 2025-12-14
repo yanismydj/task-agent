@@ -519,9 +519,10 @@ You'll be able to select your team in the next step.${colors.reset}
 // ═══════════════════════════════════════════════════════════════════════════
 
 const TRIGGER_LABELS = [
-  { name: 'clarify', color: '#0ea5e9', description: 'Trigger TaskAgent to ask clarifying questions' },
+  { name: 'ta:clarify', color: '#0ea5e9', description: 'Trigger TaskAgent to ask clarifying questions' },
   { name: 'refine', color: '#8b5cf6', description: 'Trigger TaskAgent to refine/rewrite the description' },
-  { name: 'work', color: '#22c55e', description: 'Trigger TaskAgent to start working on this issue' },
+  { name: 'ta:work', color: '#22c55e', description: 'Trigger TaskAgent to start working on this issue' },
+  { name: 'ta:plan', color: '#f59e0b', description: 'Trigger TaskAgent to enter planning mode' },
 ];
 
 async function createTriggerLabels(env: Map<string, string>): Promise<void> {
@@ -543,9 +544,10 @@ async function createTriggerLabels(env: Map<string, string>): Promise<void> {
     printInfo('Labels will be created after OAuth authorization');
     console.log(`
 ${colors.dim}You can also create these labels manually in Linear:
-  - clarify: Trigger TaskAgent to ask clarifying questions
+  - ta:clarify: Trigger TaskAgent to ask clarifying questions
   - refine: Trigger TaskAgent to refine/rewrite the description
-  - work: Trigger TaskAgent to start working on this issue${colors.reset}
+  - ta:work: Trigger TaskAgent to start working on this issue
+  - ta:plan: Trigger TaskAgent to enter planning mode${colors.reset}
 `);
     return;
   }
@@ -554,9 +556,10 @@ ${colors.dim}You can also create these labels manually in Linear:
 TaskAgent uses labels to trigger actions on issues.
 Creating the following trigger labels in your Linear team:
 
-  ${colors.cyan}clarify${colors.reset} - Ask clarifying questions
-  ${colors.cyan}refine${colors.reset}  - Rewrite/improve the description
-  ${colors.cyan}work${colors.reset}    - Start working on the issue
+  ${colors.cyan}ta:clarify${colors.reset} - Ask clarifying questions
+  ${colors.cyan}refine${colors.reset}     - Rewrite/improve the description
+  ${colors.cyan}ta:work${colors.reset}    - Start working on the issue
+  ${colors.cyan}ta:plan${colors.reset}    - Enter planning mode
 `);
 
   const create = await promptYesNo('Create trigger labels now?', true);
@@ -622,7 +625,13 @@ Creating the following trigger labels in your Linear team:
     printWarning(`Failed to create labels: ${error instanceof Error ? error.message : error}`);
     console.log(`
 ${colors.dim}You can create these labels manually in Linear:
-  Settings > Team Settings > Labels > New Label${colors.reset}
+  Settings > Team Settings > Labels > New Label
+
+  Required labels:
+  - ta:clarify: Ask clarifying questions
+  - refine: Rewrite/improve the description
+  - ta:work: Start working on the issue
+  - ta:plan: Enter planning mode${colors.reset}
 `);
   }
 }
