@@ -14,6 +14,8 @@ const DEFAULT_TTL: Record<AgentType, number> = {
   'ticket-refiner': 0, // Never cache (always fresh)
   'prompt-generator': 60 * 60 * 1000, // 1 hour
   'code-executor': 0, // Never cache
+  'planner': 0, // Never cache (planning is interactive)
+  'plan-consolidator': 60 * 60 * 1000, // 1 hour
 };
 
 interface CacheEntry {

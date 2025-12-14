@@ -3,7 +3,7 @@
  * Extracts the command word following the mention.
  */
 
-export type TaskAgentCommand = 'clarify' | 'rewrite' | 'work' | 'help';
+export type TaskAgentCommand = 'clarify' | 'rewrite' | 'work' | 'plan' | 'help';
 
 export interface ParsedMention {
   found: boolean;
@@ -11,7 +11,7 @@ export interface ParsedMention {
   rawText: string;
 }
 
-const VALID_COMMANDS = ['clarify', 'rewrite', 'work'] as const;
+const VALID_COMMANDS = ['clarify', 'rewrite', 'work', 'plan'] as const;
 
 /**
  * Parse a comment body for @taskAgent mentions.
@@ -53,6 +53,7 @@ export function parseMention(commentBody: string): ParsedMention {
 export function getHelpText(): string {
   return `**TaskAgent Commands**
 
+- \`@taskAgent plan\` - Enter planning mode to gather requirements through Q&A
 - \`@taskAgent clarify\` - Ask clarifying questions to understand requirements
 - \`@taskAgent rewrite\` - Consolidate discussion into an updated description
 - \`@taskAgent work\` - Start implementing this ticket
