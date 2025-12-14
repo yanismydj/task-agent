@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { Spinner, StatusMessage } from '@inkjs/ui';
 import { LinearAuth } from '../../../src/linear/auth.js';
+import { LinearClient } from '@linear/sdk';
 
 interface LinearAuthStepProps {
   clientId: string;
@@ -43,10 +44,19 @@ export const LinearAuthStep: React.FC<LinearAuthStepProps> = ({
       const callbackPort = ngrokUrl ? 4847 : undefined;
       const auth = new LinearAuth({ clientId, clientSecret, redirectUri, callbackPort });
 
-      // Check if we already have a valid token
+      // Check if we have a token that looks valid locally
       if (auth.hasValidToken()) {
-        setAuthState('success');
-        return;
+        // Verify the token is actually valid by making a test API call
+        try {
+          const accessToken = await auth.getAccessToken();
+          const client = new LinearClient({ accessToken });
+          await client.viewer; // Simple API call to verify token works
+          setAuthState('success');
+          return;
+        } catch {
+          // Token was revoked or invalid - clear it and re-authorize
+          auth.invalidateToken();
+        }
       }
 
       await auth.authorize();
