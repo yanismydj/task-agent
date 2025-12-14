@@ -161,9 +161,10 @@ ${description}
 Please analyze this ticket and ask any clarifying questions needed to fully understand the requirements before implementation.`;
 
       // Build args for Claude Code in plan mode
+      // Plan mode is inherently read-only - no permission skipping needed
       const baseArgs = [
+        '--permission-mode', 'plan',
         '-p', prompt,
-        '--dangerously-skip-permissions', // Auto-approve all tool usage
         '--output-format', 'stream-json',
         '--verbose',
       ];
