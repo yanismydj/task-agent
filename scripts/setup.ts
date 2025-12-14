@@ -353,7 +353,7 @@ function generateWebhookSecret(): string {
 // Linear Setup
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function setupLinearAuth(env: Map<string, string>, ngrokUrl: string | null): Promise<'oauth' | 'apikey'> {
+async function setupLinearAuth(env: Map<string, string>, ngrokUrl: string | null, workspaceSlug: string): Promise<'oauth' | 'apikey'> {
   printSection('Linear Authentication');
 
   console.log(`TaskAgent can authenticate with Linear in two ways:
@@ -372,20 +372,19 @@ async function setupLinearAuth(env: Map<string, string>, ngrokUrl: string | null
   const useOAuth = await promptYesNo('Use OAuth application (recommended)?', true);
 
   if (useOAuth) {
-    return await setupLinearOAuth(env, ngrokUrl);
+    return await setupLinearOAuth(env, ngrokUrl, workspaceSlug);
   } else {
     return await setupLinearApiKey(env);
   }
 }
 
-async function setupLinearOAuth(env: Map<string, string>, ngrokUrl: string | null): Promise<'oauth'> {
+async function setupLinearOAuth(env: Map<string, string>, ngrokUrl: string | null, workspaceSlug: string): Promise<'oauth'> {
   const redirectUrl = ngrokUrl ? `${ngrokUrl}/oauth/callback` : 'http://localhost:3456/oauth/callback';
 
   console.log(`
 ${colors.bold}Creating a Linear OAuth Application:${colors.reset}
 
-  1. Go to: ${colors.cyan}https://linear.app/<your-workspace>/settings/api/applications/new${colors.reset}
-     ${colors.dim}(Replace <your-workspace> with your Linear workspace slug)${colors.reset}
+  1. Go to: ${colors.cyan}https://linear.app/${workspaceSlug}/settings/api/applications/new${colors.reset}
 
   2. Fill in the application details:
      ${colors.bold}Application name:${colors.reset} TaskAgent (or your preferred name)
@@ -1465,7 +1464,7 @@ ${colors.dim}Then re-run this setup script.${colors.reset}
 // Webhook Setup
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function setupWebhooks(env: Map<string, string>): Promise<{ enabled: boolean; ngrokUrl: string | null }> {
+async function setupWebhooks(env: Map<string, string>): Promise<{ enabled: boolean; ngrokUrl: string | null; workspaceSlug: string }> {
   printSection('Webhook Configuration');
 
   console.log(`
@@ -1479,6 +1478,20 @@ ${colors.bold}Benefits:${colors.reset}
 - Works on remote/cloud development machines
 - OAuth redirect URLs work from anywhere
 `);
+
+  // Get Linear workspace slug for generating URLs
+  console.log(`${colors.bold}Linear Workspace${colors.reset}
+
+Your workspace slug is the part after "linear.app/" in your Linear URL.
+For example, if you access Linear at ${colors.cyan}https://linear.app/mycompany/...${colors.reset}
+then your workspace slug is ${colors.bold}mycompany${colors.reset}
+`);
+
+  const workspaceSlug = await prompt(`${icons.arrow} Linear workspace slug: `);
+  if (!workspaceSlug) {
+    printError('Workspace slug is required');
+    process.exit(1);
+  }
 
   env.set('WEBHOOK_ENABLED', 'true');
 
@@ -1509,7 +1522,7 @@ Please install ngrok manually:
 Or download from: ${colors.cyan}https://ngrok.com/download${colors.reset}
 `);
       env.set('WEBHOOK_ENABLED', 'false');
-      return { enabled: false, ngrokUrl: null };
+      return { enabled: false, ngrokUrl: null, workspaceSlug };
     }
   } else {
     printSuccess('ngrok is already installed');
@@ -1613,8 +1626,7 @@ ${colors.bold}Linear Webhook Configuration:${colors.reset}
 
 After completing this setup, configure the webhook in Linear:
 
-  1. Go to: ${colors.cyan}https://linear.app/<your-workspace>/settings/api/webhooks${colors.reset}
-     ${colors.dim}(Replace <your-workspace> with your Linear workspace slug)${colors.reset}
+  1. Go to: ${colors.cyan}https://linear.app/${workspaceSlug}/settings/api/webhooks${colors.reset}
 
   2. Click "${colors.bold}New webhook${colors.reset}"
 
@@ -1638,7 +1650,7 @@ If you restart ngrok and get a new URL, update the webhook URL in Linear.${color
 
   await waitForEnter();
 
-  return { enabled: true, ngrokUrl };
+  return { enabled: true, ngrokUrl, workspaceSlug };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1847,8 +1859,8 @@ async function main(): Promise<void> {
     // Step 4: Webhook setup (BEFORE OAuth to get ngrok URL)
     const webhookSetup = await setupWebhooks(env);
 
-    // Step 5: Linear authentication (with ngrok URL if webhooks enabled)
-    await setupLinearAuth(env, webhookSetup.ngrokUrl);
+    // Step 5: Linear authentication (with ngrok URL and workspace slug)
+    await setupLinearAuth(env, webhookSetup.ngrokUrl, webhookSetup.workspaceSlug);
 
     // Step 6: Fetch Linear teams
     await fetchLinearTeams(env);
