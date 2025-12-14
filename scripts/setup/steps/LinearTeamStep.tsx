@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { Spinner, Select, StatusMessage } from '@inkjs/ui';
+import { LinearClient } from '@linear/sdk';
+import { LinearAuth } from '../../../src/linear/auth.js';
 
 interface LinearTeamStepProps {
   clientId: string;
@@ -25,11 +27,37 @@ export const LinearTeamStep: React.FC<LinearTeamStepProps> = ({
   const [manualInput, setManualInput] = useState(false);
 
   useEffect(() => {
-    // For now, we'll skip the API fetch and ask for manual input
-    // In a full implementation, we'd use the OAuth flow here
-    setLoading(false);
-    setManualInput(true);
-  }, []);
+    const fetchTeams = async () => {
+      try {
+        // Get access token from stored OAuth credentials
+        const auth = new LinearAuth({ clientId, clientSecret });
+        const accessToken = await auth.getAccessToken();
+
+        const client = new LinearClient({ accessToken });
+        const teamsResult = await client.teams();
+
+        const fetchedTeams = teamsResult.nodes.map((team) => ({
+          id: team.id,
+          name: team.name,
+          key: team.key,
+        }));
+
+        if (fetchedTeams.length === 0) {
+          setError('No teams found in your Linear workspace');
+          setManualInput(true);
+        } else {
+          setTeams(fetchedTeams);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to fetch teams');
+        setManualInput(true);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchTeams();
+  }, [clientId, clientSecret]);
 
   useInput((input, key) => {
     if (key.return && manualInput) {
@@ -59,13 +87,16 @@ export const LinearTeamStep: React.FC<LinearTeamStepProps> = ({
   if (manualInput || teams.length === 0) {
     return (
       <Box flexDirection="column">
-        <Text>Enter your Linear Team ID:</Text>
+        <Text>Enter your Linear Team UUID:</Text>
         <Box marginTop={1} flexDirection="column">
           <Text dimColor>
             You can find this in Linear: Settings → Team Settings → General
           </Text>
           <Text dimColor>
-            Look for the "Team ID" field, or use the team key from your issue IDs (e.g., "ENG" from "ENG-123")
+            The Team ID is a UUID like: 12345678-1234-1234-1234-123456789abc
+          </Text>
+          <Text dimColor color="yellow">
+            Note: This must be the UUID, not the team key (e.g., not "ENG")
           </Text>
         </Box>
         <Box marginTop={1}>
@@ -93,23 +124,31 @@ export const LinearTeamStep: React.FC<LinearTeamStepProps> = ({
 // Separate component to handle manual input
 import { TextInput } from '@inkjs/ui';
 
+// UUID validation regex
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const ManualTeamInput: React.FC<{ onSubmit: (value: string) => void }> = ({
   onSubmit,
 }) => {
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = (value: string) => {
-    if (!value.trim()) {
-      setError('Team ID is required');
+    const trimmed = value.trim();
+    if (!trimmed) {
+      setError('Team UUID is required');
+      return;
+    }
+    if (!UUID_REGEX.test(trimmed)) {
+      setError('Invalid UUID format. Must be like: 12345678-1234-1234-1234-123456789abc');
       return;
     }
     setError(null);
-    onSubmit(value.trim());
+    onSubmit(trimmed);
   };
 
   return (
     <Box flexDirection="column">
-      <TextInput placeholder="team-id-or-key" onSubmit={handleSubmit} />
+      <TextInput placeholder="team-uuid" onSubmit={handleSubmit} />
       {error && (
         <Box marginTop={1}>
           <Text color="red">✗ {error}</Text>
