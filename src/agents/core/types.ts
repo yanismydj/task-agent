@@ -4,7 +4,9 @@ export type AgentType =
   | 'readiness-scorer'
   | 'ticket-refiner'
   | 'prompt-generator'
-  | 'code-executor';
+  | 'code-executor'
+  | 'planner'
+  | 'plan-consolidator';
 
 export type ModelTier = 'fast' | 'standard' | 'advanced';
 

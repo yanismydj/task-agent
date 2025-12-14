@@ -411,6 +411,8 @@ export type LinearTaskType =
   | 'refine'          // Run ticket refiner (also: @taskAgent clarify)
   | 'consolidate'     // Consolidate discussion into description (@taskAgent rewrite)
   | 'execute'         // Start Claude Code directly (@taskAgent work)
+  | 'plan'            // Enter planning mode with Claude Code (@taskAgent plan)
+  | 'consolidate_plan' // Consolidate planning Q&A into implementation plan
   | 'check_response'  // Check for human response (deprecated)
   | 'generate_prompt' // Generate execution prompt
   | 'sync_state';     // Sync state to Linear

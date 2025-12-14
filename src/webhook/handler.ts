@@ -12,10 +12,11 @@ const logger = createChildLogger({ module: 'webhook-handler' });
 
 // Trigger labels - adding these labels to an issue triggers the corresponding action
 // Labels are matched case-insensitively
-const TRIGGER_LABELS: Record<string, 'refine' | 'consolidate' | 'execute'> = {
+const TRIGGER_LABELS: Record<string, 'refine' | 'consolidate' | 'execute' | 'plan'> = {
   'clarify': 'refine',        // Triggers TicketRefinerAgent (clarifying questions)
   'refine': 'consolidate',    // Triggers DescriptionConsolidatorAgent (rewrite description)
   'work': 'execute',          // Triggers CodeExecutorAgent (Claude Code)
+  'plan': 'plan',             // Triggers PlannerAgent (Claude Code in plan mode)
 };
 
 // Helper to check if a comment is from TaskAgent (using user ID)
@@ -182,6 +183,43 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
   const mention = parseMention(data.body);
 
   if (!mention.found) {
+    // Check if this is a response to planning questions
+    // If the issue is awaiting a 'questions' response and has planning questions,
+    // trigger plan consolidation
+    if (queueScheduler.isAwaitingResponse(issueId)) {
+      const awaitingType = queueScheduler.getAwaitingResponseType(issueId);
+      if (awaitingType === 'questions') {
+        // Check if there are planning questions in the cache
+        const cachedTicket = linearCache.getTicket(issueId);
+        if (cachedTicket) {
+          const cachedComments = linearCache.getComments(issueId);
+          const hasPlanningQuestions = cachedComments.some(
+            (c) => c.body?.includes('Planning Question')
+          );
+
+          if (hasPlanningQuestions) {
+            logger.info(
+              { issueId, ticketId: cachedTicket.identifier },
+              'Detected response to planning questions - triggering plan consolidation'
+            );
+
+            // Clear awaiting state
+            queueScheduler.clearAwaitingResponse(issueId);
+
+            // Enqueue plan consolidation task
+            linearQueue.enqueue({
+              ticketId: issueId,
+              ticketIdentifier: cachedTicket.identifier,
+              taskType: 'consolidate_plan',
+              priority: 1, // High priority - human just responded
+            });
+
+            return;
+          }
+        }
+      }
+    }
+
     logger.debug({ issueId, commentLength: data.body.length }, 'No @taskAgent mention, ignoring comment');
     return;
   }
@@ -210,6 +248,7 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
 
   // Map mention commands to task types
   const taskTypeMap = {
+    'plan': 'plan',            // Uses PlannerAgent (Claude Code in plan mode)
     'clarify': 'refine',       // Uses TicketRefinerAgent
     'rewrite': 'consolidate',  // Uses DescriptionConsolidatorAgent
     'work': 'execute',         // Uses CodeExecutorAgent

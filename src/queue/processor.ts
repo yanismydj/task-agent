@@ -13,6 +13,8 @@ import {
   promptGeneratorAgent,
   codeExecutorAgent,
   descriptionConsolidatorAgent,
+  plannerAgent,
+  planConsolidatorAgent,
 } from '../agents/impl/index.js';
 import type {
   AgentInput,
@@ -22,6 +24,8 @@ import type {
   PromptGeneratorInput,
 } from '../agents/core/index.js';
 import type { DescriptionConsolidatorInput } from '../agents/impl/description-consolidator.js';
+import type { PlannerInput } from '../agents/impl/planner.js';
+import type { PlanConsolidatorInput } from '../agents/impl/plan-consolidator.js';
 // descriptionApprovalManager is used by webhook handler for description rewrites
 // import { descriptionApprovalManager } from './description-approvals.js';
 
@@ -158,6 +162,12 @@ export class QueueProcessor {
           break;
         case 'execute':
           await this.handleExecuteDirect(task);
+          break;
+        case 'plan':
+          await this.handlePlan(task);
+          break;
+        case 'consolidate_plan':
+          await this.handleConsolidatePlan(task);
           break;
         case 'check_response':
           await this.handleCheckResponse(task);
@@ -836,6 +846,200 @@ export class QueueProcessor {
     const state = task.inputData?.state as string;
     linearQueue.complete(task.id, { synced: true });
     this.callbacks.onStateChange?.(task.ticketId, state);
+  }
+
+  /**
+   * Handle the @taskAgent plan command - enter planning mode with Claude Code.
+   * Claude will ask clarifying questions which are posted as individual comments.
+   * User responses are collected and consolidated into a plan.
+   */
+  private async handlePlan(task: LinearQueueItem): Promise<void> {
+    const ticket = await linearClient.getTicketCached(task.ticketId);
+    if (!ticket) {
+      linearQueue.fail(task.id, 'Ticket not found');
+      return;
+    }
+
+    logger.info(
+      { ticketId: task.ticketIdentifier },
+      'Starting planning mode (@taskAgent plan)'
+    );
+
+    // Post acknowledgement
+    await linearClient.addComment(task.ticketId, 'Entering planning mode to gather requirements...');
+
+    // Create worktree for the planning session
+    const worktree = await worktreeManager.create(ticket.identifier);
+
+    // Build input for planner agent
+    const plannerInput: AgentInput<PlannerInput> = {
+      ticketId: task.ticketId,
+      ticketIdentifier: ticket.identifier,
+      data: {
+        ticketIdentifier: ticket.identifier,
+        title: ticket.title,
+        description: ticket.description || '',
+        worktreePath: worktree.path,
+        branchName: worktree.branch,
+      },
+    };
+
+    const result = await plannerAgent.execute(plannerInput);
+
+    // Clean up worktree
+    await worktreeManager.remove(ticket.identifier);
+
+    if (!result.success || !result.data) {
+      linearQueue.fail(task.id, result.error || 'Planning failed');
+      await linearClient.addComment(
+        task.ticketId,
+        `Planning mode failed: ${result.error || 'Unknown error'}`
+      );
+      return;
+    }
+
+    // Post questions as individual comments if any were generated
+    const questions = result.data.questions || [];
+    if (questions.length > 0) {
+      logger.info(
+        { ticketId: task.ticketIdentifier, questionCount: questions.length },
+        'Posting planning questions'
+      );
+
+      // Post each question as a separate comment
+      for (let i = 0; i < questions.length; i++) {
+        const question = questions[i];
+        const commentBody = `**Planning Question ${i + 1}/${questions.length}**\n\n${question}`;
+        await linearClient.addComment(task.ticketId, commentBody);
+      }
+
+      // Register that we're waiting for answers
+      queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
+
+      this.callbacks.onStateChange?.(task.ticketId, 'awaiting_planning_response');
+    } else {
+      // No questions - planning complete
+      logger.info(
+        { ticketId: task.ticketIdentifier },
+        'Planning mode generated no questions - ticket may be ready'
+      );
+
+      await linearClient.addComment(
+        task.ticketId,
+        'Planning complete. No additional questions needed. You can now use `@taskAgent work` to start implementation.'
+      );
+    }
+
+    linearQueue.complete(task.id, result.data);
+    logger.info({ ticketId: task.ticketIdentifier }, 'Planning mode completed');
+  }
+
+  /**
+   * Handle consolidation of planning Q&A into a comprehensive plan.
+   * This is triggered when users respond to planning questions.
+   */
+  private async handleConsolidatePlan(task: LinearQueueItem): Promise<void> {
+    const ticket = await linearClient.getTicketCached(task.ticketId);
+    if (!ticket) {
+      linearQueue.fail(task.id, 'Ticket not found');
+      return;
+    }
+
+    const comments = await linearClient.getCommentsCached(task.ticketId);
+
+    logger.info(
+      { ticketId: task.ticketIdentifier, commentCount: comments.length },
+      'Consolidating planning Q&A into implementation plan'
+    );
+
+    // Check if there are planning questions in comments
+    const hasPlanningQuestions = comments.some(
+      (c) => isTaskAgentComment(c.user) && c.body.includes('Planning Question')
+    );
+
+    if (!hasPlanningQuestions) {
+      logger.warn(
+        { ticketId: task.ticketIdentifier },
+        'No planning questions found - cannot consolidate plan'
+      );
+      linearQueue.fail(task.id, 'No planning questions found');
+      return;
+    }
+
+    // Check if there are human responses after the planning questions
+    const firstPlanningQuestion = comments.find(
+      (c) => isTaskAgentComment(c.user) && c.body.includes('Planning Question')
+    );
+
+    if (!firstPlanningQuestion) {
+      linearQueue.fail(task.id, 'Cannot find planning questions');
+      return;
+    }
+
+    const hasHumanResponses = comments.some(
+      (c) => !isTaskAgentComment(c.user) && c.createdAt > firstPlanningQuestion.createdAt
+    );
+
+    if (!hasHumanResponses) {
+      logger.info(
+        { ticketId: task.ticketIdentifier },
+        'No human responses yet - waiting for answers to planning questions'
+      );
+      linearQueue.fail(task.id, 'No human responses yet');
+      return;
+    }
+
+    // Build input for plan consolidator
+    const input: AgentInput<PlanConsolidatorInput> = {
+      ticketId: task.ticketId,
+      ticketIdentifier: task.ticketIdentifier,
+      data: {
+        title: ticket.title,
+        originalDescription: ticket.description || '',
+        comments: comments.map((c) => ({
+          body: c.body,
+          isFromTaskAgent: isTaskAgentComment(c.user),
+          createdAt: c.createdAt,
+        })),
+      },
+    };
+
+    const result = await planConsolidatorAgent.execute(input);
+
+    if (!result.success || !result.data) {
+      linearQueue.fail(task.id, result.error || 'Plan consolidation failed');
+      await linearClient.addComment(
+        task.ticketId,
+        `Failed to consolidate plan: ${result.error || 'Unknown error'}`
+      );
+      return;
+    }
+
+    // Update the ticket description with the consolidated plan
+    // Prepend the plan to the original description
+    const updatedDescription = `# Implementation Plan
+
+${result.data.consolidatedPlan}
+
+---
+
+# Original Description
+
+${ticket.description || ''}`;
+
+    await linearClient.updateDescription(task.ticketId, updatedDescription);
+
+    // Post confirmation comment
+    await linearClient.addComment(
+      task.ticketId,
+      `✅ Planning complete! I've consolidated our discussion into an implementation plan and updated the ticket description.\n\nYou can now use \`@taskAgent work\` to start implementation.`
+    );
+
+    // Clear awaiting response state
+    queueScheduler.clearAwaitingResponse(task.ticketId);
+
+    linearQueue.complete(task.id, result.data);
+    logger.info({ ticketId: task.ticketIdentifier }, 'Plan consolidation completed');
   }
 
   private async handleExecution(task: ClaudeQueueItem): Promise<void> {
