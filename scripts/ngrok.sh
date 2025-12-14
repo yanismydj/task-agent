@@ -3,7 +3,7 @@
 # Start ngrok to expose the webhook server
 # Run this in a separate terminal alongside `npm run dev`
 
-PORT=${WEBHOOK_PORT:-3000}
+PORT=${WEBHOOK_PORT:-4847}
 
 echo "Starting ngrok on port $PORT..."
 echo ""

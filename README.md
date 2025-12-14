@@ -143,10 +143,10 @@ Expected output:
 ```
 [12:00:00] INFO: TaskAgent daemon starting...
 [12:00:00] INFO: Connected to Linear API
-[12:00:00] INFO: Webhook server listening on port 3000
+[12:00:00] INFO: Webhook server listening on port 4847
 [12:00:01] INFO: Initial sync complete - found 12 tickets
 [12:00:01] INFO: TaskAgent daemon ready
-Server running on http://localhost:3000
+Server running on http://localhost:4847
 ```
 
 ### Deployment Options
@@ -160,7 +160,7 @@ Server running on http://localhost:3000
 For webhook setup in development:
 ```bash
 # Terminal 1: Start ngrok
-ngrok http 3000
+ngrok http 4847
 
 # Terminal 2: Start TaskAgent
 npm run dev

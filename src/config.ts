@@ -25,7 +25,7 @@ const ConfigSchema = z.object({
   }),
   webhook: z.object({
     enabled: z.boolean().default(false),
-    port: z.number().int().min(1).max(65535).default(3000),
+    port: z.number().int().min(1).max(65535).default(4847),
     allowUnsigned: z.boolean().default(false), // Only for development - allows unsigned webhooks
   }),
   isDevelopment: z.boolean().default(false),
@@ -94,7 +94,7 @@ function loadConfig(): Config {
     },
     webhook: {
       enabled: process.env['WEBHOOK_ENABLED'] === 'true',
-      port: parseInt(process.env['WEBHOOK_PORT'] || '3000', 10),
+      port: parseInt(process.env['WEBHOOK_PORT'] || '4847', 10),
       allowUnsigned: process.env['WEBHOOK_ALLOW_UNSIGNED'] === 'true',
     },
     isDevelopment: process.env['NODE_ENV'] !== 'production',

@@ -1471,31 +1471,25 @@ ${colors.dim}Then re-run this setup script.${colors.reset}
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function setupWebhooks(env: Map<string, string>): Promise<{ enabled: boolean; ngrokUrl: string | null }> {
-  printSection('Webhook Configuration (Optional)');
+  printSection('Webhook Configuration');
 
   console.log(`
 ${colors.bold}Webhooks${colors.reset} enable real-time updates from Linear.
 
-Without webhooks: TaskAgent polls Linear every 30 seconds
-With webhooks: TaskAgent gets instant notifications
+TaskAgent uses ${colors.bold}ngrok${colors.reset} to expose your local webhook server, allowing Linear
+to send instant notifications when tickets are updated.
 
 ${colors.bold}Benefits:${colors.reset}
-- Immediate response to Linear changes
+- Immediate response to Linear changes (vs 30-second polling)
 - Works on remote/cloud development machines
 - OAuth redirect URLs work from anywhere
-
-${colors.dim}Webhooks require ngrok (or similar tunnel) to expose your local server.${colors.reset}
 `);
 
-  const enableWebhooks = await promptYesNo('Enable webhooks?', false);
-
-  if (!enableWebhooks) {
-    env.set('WEBHOOK_ENABLED', 'false');
-    printInfo('Webhooks disabled. TaskAgent will use polling.');
-    return { enabled: false, ngrokUrl: null };
-  }
-
   env.set('WEBHOOK_ENABLED', 'true');
+
+  // Hardcoded webhook port - using obscure port to avoid conflicts with common dev servers
+  const port = '4847';
+  env.set('WEBHOOK_PORT', port);
 
   // Check ngrok
   let ngrokInstalled = false;
@@ -1507,52 +1501,60 @@ ${colors.dim}Webhooks require ngrok (or similar tunnel) to expose your local ser
   }
 
   if (!ngrokInstalled) {
-    console.log(`
-${colors.bold}Installing ngrok:${colors.reset}
-
-ngrok is required for webhooks. Install it with:
-
+    console.log(`${colors.bold}Installing ngrok...${colors.reset}\n`);
+    try {
+      execSync('brew install ngrok', { stdio: 'inherit' });
+      printSuccess('ngrok installed');
+    } catch (error) {
+      printError('Failed to install ngrok via Homebrew.');
+      console.log(`
+Please install ngrok manually:
   ${colors.cyan}brew install ngrok${colors.reset}
 
-Then authenticate with your ngrok account:
-
-  ${colors.cyan}ngrok config add-authtoken <your-token>${colors.reset}
-
-Get your token at: ${colors.cyan}https://dashboard.ngrok.com/get-started/your-authtoken${colors.reset}
+Or download from: ${colors.cyan}https://ngrok.com/download${colors.reset}
 `);
-
-    const installNow = await promptYesNo('Would you like to install ngrok now?', true);
-
-    if (installNow) {
-      console.log('\nInstalling ngrok via Homebrew...\n');
-      try {
-        execSync('brew install ngrok', { stdio: 'inherit' });
-        printSuccess('ngrok installed');
-
-        console.log(`
-${colors.bold}Next:${colors.reset} Authenticate ngrok with your account token.
-Get your token at: ${colors.cyan}https://dashboard.ngrok.com/get-started/your-authtoken${colors.reset}
-`);
-
-        const authToken = await promptSecret(`${icons.arrow} ngrok auth token (or Enter to skip): `);
-        if (authToken) {
-          execSync(`ngrok config add-authtoken ${authToken}`, { stdio: 'inherit' });
-          printSuccess('ngrok authenticated');
-        }
-      } catch (error) {
-        printError('Failed to install ngrok. Please install manually.');
-        env.set('WEBHOOK_ENABLED', 'false');
-        return { enabled: false, ngrokUrl: null };
-      }
-    } else {
-      printWarning('ngrok not installed. Disabling webhooks.');
       env.set('WEBHOOK_ENABLED', 'false');
       return { enabled: false, ngrokUrl: null };
     }
+  } else {
+    printSuccess('ngrok is already installed');
   }
 
-  const port = await promptWithDefault('Webhook port', env.get('WEBHOOK_PORT') || '3000');
-  env.set('WEBHOOK_PORT', port);
+  // Check if ngrok is authenticated
+  let ngrokAuthenticated = false;
+  try {
+    const configOutput = execSync('ngrok config check', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    ngrokAuthenticated = !configOutput.includes('authtoken') || configOutput.includes('Valid');
+  } catch {
+    // Config check failed, likely not authenticated
+    ngrokAuthenticated = false;
+  }
+
+  if (!ngrokAuthenticated) {
+    console.log(`
+${colors.bold}ngrok authentication required${colors.reset}
+
+To get your auth token:
+  1. Sign up or log in at ${colors.cyan}https://ngrok.com${colors.reset} (free account)
+  2. Go to ${colors.cyan}https://dashboard.ngrok.com/get-started/your-authtoken${colors.reset}
+  3. Copy your auth token from the dashboard
+`);
+
+    const authToken = await promptSecret(`${icons.arrow} Paste your ngrok auth token: `);
+    if (authToken) {
+      try {
+        execSync(`ngrok config add-authtoken ${authToken}`, { stdio: 'inherit' });
+        printSuccess('ngrok authenticated');
+      } catch (error) {
+        printError('Failed to authenticate ngrok. Please run manually:');
+        console.log(`  ${colors.cyan}ngrok config add-authtoken <your-token>${colors.reset}\n`);
+      }
+    } else {
+      printWarning('ngrok not authenticated. You may need to authenticate before running TaskAgent.');
+    }
+  } else {
+    printSuccess('ngrok is authenticated');
+  }
 
   // Generate webhook signing secret
   const webhookSecret = generateWebhookSecret();
