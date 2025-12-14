@@ -118,6 +118,12 @@ export const PromptGeneratorInputSchema = z.object({
     title: z.string(),
     description: z.string(),
     acceptanceCriteria: z.array(z.string()).optional(),
+    attachments: z.array(z.object({
+      id: z.string(),
+      title: z.string().nullable(),
+      url: z.string(),
+      localPath: z.string().optional(),
+    })).optional(),
   }),
   codebaseInfo: z.object({
     relevantFiles: z.array(z.string()),
