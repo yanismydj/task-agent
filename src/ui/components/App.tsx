@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Text, useApp, useInput } from 'ink';
+import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import { SplashScreen } from './SplashScreen.js';
 import { LogPane, type LogEntry } from './LogPane.js';
 import { AgentPane, type AgentInfo } from './AgentPane.js';
@@ -13,9 +13,13 @@ interface AppProps {
 
 export const App: React.FC<AppProps> = ({ getLogs, getAgentState, getRateLimitResetAt }) => {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const [showSplash, setShowSplash] = React.useState(true);
   const [startTime] = React.useState(new Date());
   const [, forceUpdate] = React.useReducer((x) => x + 1, 0);
+
+  // Get terminal dimensions
+  const terminalHeight = stdout?.rows ?? 24;
 
   // Handle Ctrl+C gracefully
   useInput((input, key) => {
@@ -54,7 +58,7 @@ export const App: React.FC<AppProps> = ({ getLogs, getAgentState, getRateLimitRe
   const rateLimitResetAt = getRateLimitResetAt();
 
   return (
-    <Box flexDirection="column" height="100%">
+    <Box flexDirection="column" height={terminalHeight}>
       {/* Rate limit banner */}
       {rateLimitResetAt && new Date() < rateLimitResetAt && (
         <Box
