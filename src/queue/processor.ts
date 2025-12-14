@@ -660,6 +660,14 @@ export class QueueProcessor {
     // Post acknowledgement
     await linearClient.addComment(task.ticketId, 'Starting work on this ticket...');
 
+    // Fetch attachments
+    const attachments = await linearClient.getAttachments(task.ticketId);
+    const attachmentsForPrompt = attachments.map(a => ({
+      id: a.id,
+      title: a.title,
+      url: a.url,
+    }));
+
     // Generate the prompt
     const promptInput: AgentInput<PromptGeneratorInput> = {
       ticketId: task.ticketId,
@@ -669,6 +677,7 @@ export class QueueProcessor {
           identifier: ticket.identifier,
           title: ticket.title,
           description: ticket.description || '',
+          attachments: attachmentsForPrompt.length > 0 ? attachmentsForPrompt : undefined,
         },
         constraints: {
           branchNaming: `task-agent/${ticket.identifier.toLowerCase()}`,
@@ -770,6 +779,14 @@ export class QueueProcessor {
       return;
     }
 
+    // Fetch attachments
+    const attachments = await linearClient.getAttachments(task.ticketId);
+    const attachmentsForPrompt = attachments.map(a => ({
+      id: a.id,
+      title: a.title,
+      url: a.url,
+    }));
+
     const input: AgentInput<PromptGeneratorInput> = {
       ticketId: task.ticketId,
       ticketIdentifier: task.ticketIdentifier,
@@ -778,6 +795,7 @@ export class QueueProcessor {
           identifier: ticket.identifier,
           title: ticket.title,
           description: ticket.description || '',
+          attachments: attachmentsForPrompt.length > 0 ? attachmentsForPrompt : undefined,
         },
         constraints: {
           branchNaming: `task-agent/${ticket.identifier.toLowerCase()}`,

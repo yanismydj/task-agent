@@ -5,6 +5,14 @@ export interface ProjectLead {
   url: string;
 }
 
+export interface AttachmentInfo {
+  id: string;
+  title: string | null;
+  subtitle: string | null;
+  url: string;
+  metadata?: Record<string, string | number>;
+}
+
 export interface TicketInfo {
   id: string;
   identifier: string;
@@ -27,6 +35,7 @@ export interface TicketInfo {
   createdAt: Date;
   updatedAt: Date;
   url: string;
+  attachments?: AttachmentInfo[];
 }
 
 export interface TicketComment {

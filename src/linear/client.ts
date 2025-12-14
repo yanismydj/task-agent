@@ -50,6 +50,7 @@ const COMPLEXITY_ESTIMATES: Record<string, number> = {
   'getTicket': 10,
   'getTickets': 100, // Per page of 50
   'getComments': 50,
+  'getAttachments': 30,
   'addComment': 5,
   'deleteComment': 5,
   'updateIssue': 10,
@@ -635,6 +636,31 @@ export class LinearApiClient {
       }));
       linearCache.upsertComments(issueId, commentsForCache);
 
+      return result;
+    });
+  }
+
+  /**
+   * Get attachments for an issue
+   * Fetches attachments including images/screenshots that may provide visual context
+   */
+  async getAttachments(issueId: string): Promise<import('./types.js').AttachmentInfo[]> {
+    logger.debug({ issueId }, 'Fetching attachments from Linear');
+    this.logComplexity('getAttachments');
+
+    return this.withRetry(async (client) => {
+      const issue = await client.issue(issueId);
+      const attachments = await issue.attachments();
+
+      const result = attachments.nodes.map((attachment) => ({
+        id: attachment.id,
+        title: attachment.title ?? null,
+        subtitle: attachment.subtitle ?? null,
+        url: attachment.url,
+        metadata: attachment.metadata as Record<string, string | number> | undefined,
+      }));
+
+      logger.debug({ issueId, count: result.length }, 'Fetched attachments');
       return result;
     });
   }

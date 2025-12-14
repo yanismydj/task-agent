@@ -156,6 +156,16 @@ ${ticket.description}`;
       }
     }
 
+    if (ticket.attachments && ticket.attachments.length > 0) {
+      context += '\n\n### Attachments\n';
+      context += 'The ticket has the following attachments that may provide visual context:\n';
+      for (const attachment of ticket.attachments) {
+        const title = attachment.title || 'Untitled attachment';
+        context += `- ${title}: ${attachment.url}\n`;
+      }
+      context += '\nNote: Include instructions in the prompt for Claude Code to examine these attachments if they contain relevant visual information (UI mockups, error screenshots, etc.).\n';
+    }
+
     if (codebaseInfo) {
       context += '\n\n## Codebase Information\n';
 
