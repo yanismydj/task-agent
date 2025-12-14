@@ -88,13 +88,18 @@ export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
           <Text dimColor>   This reveals additional options:</Text>
           <Box marginLeft={3} flexDirection="column">
             <Text>Webhook URL: <Text color="cyan">{webhookUrl}</Text></Text>
-            <Text>Webhook secret: <Text dimColor>Copy this value</Text></Text>
             <Text>Data change events: ☑ Issues, ☑ Issue labels, ☑ Comments, ☑ Emoji reactions</Text>
           </Box>
         </Box>
 
         <Box marginTop={1}>
-          <Text>5. Click <Text bold>Create</Text> and copy the credentials</Text>
+          <Text>5. Click <Text bold>Create</Text></Text>
+        </Box>
+
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor>After creating the app, Linear will show you:</Text>
+          <Text dimColor>   • Client ID and Client Secret</Text>
+          <Text dimColor>   • Webhook signing secret (scroll down to find it)</Text>
         </Box>
 
         <Box marginTop={2}>
@@ -143,9 +148,15 @@ export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
   if (currentField === 'webhookSecret') {
     return (
       <Box flexDirection="column">
-        <Text>Enter the Webhook signing secret from Linear:</Text>
+        <Text bold>Webhook Signing Secret</Text>
+        <Text dimColor>Scroll down on your Linear OAuth app page to find the webhook section.</Text>
+        <Text dimColor>Copy the "Signing secret" value.</Text>
+
         <Box marginTop={1}>
-          <PasswordInput placeholder="webhook-secret" onSubmit={handleWebhookSecretSubmit} />
+          <Text>Enter the Webhook signing secret:</Text>
+        </Box>
+        <Box marginTop={1}>
+          <PasswordInput placeholder="webhook-signing-secret" onSubmit={handleWebhookSecretSubmit} />
         </Box>
         {error && (
           <Box marginTop={1}>
