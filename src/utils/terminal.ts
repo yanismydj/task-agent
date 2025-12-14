@@ -1,9 +1,13 @@
 // ANSI color codes
+// Using both standard and bright variants for better visibility across themes
+// Standard colors (30-37) work well in dark themes
+// Bright colors (90-97) provide better contrast in both dark and light themes
 const colors = {
   reset: '\x1b[0m',
   bold: '\x1b[1m',
   dim: '\x1b[2m',
 
+  // Standard colors (work best in dark themes)
   black: '\x1b[30m',
   red: '\x1b[31m',
   green: '\x1b[32m',
@@ -13,6 +17,17 @@ const colors = {
   cyan: '\x1b[36m',
   white: '\x1b[37m',
 
+  // Bright/bold colors (better visibility in both dark and light themes)
+  brightBlack: '\x1b[90m',
+  brightRed: '\x1b[91m',
+  brightGreen: '\x1b[92m',
+  brightYellow: '\x1b[93m',
+  brightBlue: '\x1b[94m',
+  brightMagenta: '\x1b[95m',
+  brightCyan: '\x1b[96m',
+  brightWhite: '\x1b[97m',
+
+  // Background colors
   bgBlack: '\x1b[40m',
   bgRed: '\x1b[41m',
   bgGreen: '\x1b[42m',
@@ -21,19 +36,26 @@ const colors = {
   bgMagenta: '\x1b[45m',
   bgCyan: '\x1b[46m',
   bgWhite: '\x1b[47m',
+
+  // Semantic colors for log levels (designed to work in both dark and light themes)
+  // These provide consistent, accessible styling across terminal environments
+  errorColor: '\x1b[91m\x1b[1m',      // Bright red + bold - highly visible for critical issues
+  warnColor: '\x1b[93m',              // Bright yellow - noticeable but not alarming
+  infoColor: '\x1b[96m',              // Bright cyan - clear and readable
+  successColor: '\x1b[92m',           // Bright green - positive feedback
 };
 
 const c = colors;
 
 const LOGO = `
-${c.cyan}${c.bold}  ████████╗ █████╗ ███████╗██╗  ██╗
+${c.brightCyan}${c.bold}  ████████╗ █████╗ ███████╗██╗  ██╗
   ╚══██╔══╝██╔══██╗██╔════╝██║ ██╔╝
      ██║   ███████║███████╗█████╔╝
      ██║   ██╔══██║╚════██║██╔═██╗
      ██║   ██║  ██║███████║██║  ██╗
      ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
-  ${c.dim}${c.white}═══════════════════════════════════${c.reset}
-  ${c.cyan}${c.bold}     A G E N T${c.reset}  ${c.dim}v0.1.0${c.reset}
+  ${c.dim}═══════════════════════════════════${c.reset}
+  ${c.brightCyan}${c.bold}     A G E N T${c.reset}  ${c.dim}v0.1.0${c.reset}
 `;
 
 const DIVIDER = `${c.dim}${'─'.repeat(50)}${c.reset}`;
@@ -172,11 +194,11 @@ class TerminalUI {
     const { agents, available, total } = state;
 
     if (agents.length === 0) {
-      lines.push(`${c.bold}${c.white}  CLAUDE CODE${c.reset}`);
+      lines.push(`${c.bold}${c.brightCyan}  CLAUDE CODE${c.reset}`);
       lines.push(DIVIDER);
-      lines.push(`  ${c.dim}No active sessions${c.reset}  ${c.green}●${c.reset} ${available}/${total} slots available`);
+      lines.push(`  ${c.dim}No active sessions${c.reset}  ${c.successColor}●${c.reset} ${available}/${total} slots available`);
     } else {
-      lines.push(`${c.bold}${c.white}  CLAUDE CODE OUTPUT${c.reset}`);
+      lines.push(`${c.bold}${c.brightCyan}  CLAUDE CODE OUTPUT${c.reset}`);
       lines.push(DIVIDER);
 
       // Show active agents with their recent output
@@ -186,15 +208,15 @@ class TerminalUI {
         const ticket = agent.ticketIdentifier || 'Unknown';
 
         lines.push(
-          `  ${statusIcon} ${c.bold}${ticket}${c.reset} ${c.dim}│${c.reset} ` +
-          `${c.cyan}${agent.status}${c.reset} ${c.dim}│${c.reset} ${runtime}`
+          `  ${statusIcon} ${c.bold}${c.brightWhite}${ticket}${c.reset} ${c.dim}│${c.reset} ` +
+          `${c.brightCyan}${agent.status}${c.reset} ${c.dim}│${c.reset} ${c.dim}${runtime}${c.reset}`
         );
 
         // Show recent Claude Code output (indented)
         if (agent.recentOutput.length > 0) {
           for (const outputLine of agent.recentOutput) {
             const truncated = outputLine.length > 70 ? outputLine.slice(0, 67) + '...' : outputLine;
-            lines.push(`     ${c.dim}│${c.reset} ${c.white}${truncated}${c.reset}`);
+            lines.push(`     ${c.dim}│${c.reset} ${truncated}`);
           }
         } else {
           lines.push(`     ${c.dim}│ Waiting for output...${c.reset}`);
@@ -203,7 +225,7 @@ class TerminalUI {
       }
 
       lines.push(THIN_DIVIDER);
-      lines.push(`  ${c.green}●${c.reset} ${available}/${total} slots available`);
+      lines.push(`  ${c.successColor}●${c.reset} ${available}/${total} slots available`);
     }
 
     return lines.join('\n');
@@ -212,7 +234,7 @@ class TerminalUI {
   private buildLogSection(): string {
     const lines: string[] = [];
 
-    lines.push(`${c.bold}${c.white}  ACTIVITY${c.reset}`);
+    lines.push(`${c.bold}${c.brightWhite}  ACTIVITY${c.reset}`);
     lines.push(DIVIDER);
 
     if (this.logBuffer.length === 0) {
@@ -223,11 +245,27 @@ class TerminalUI {
         const levelIcon = this.getLevelIcon(entry.level);
         const module = entry.module ? `${c.dim}[${entry.module}]${c.reset} ` : '';
 
-        lines.push(`  ${c.dim}${time}${c.reset} ${levelIcon} ${module}${entry.message}`);
+        // Apply color to message based on log level for better visual hierarchy
+        const coloredMessage = this.colorizeMessage(entry.message, entry.level);
+
+        lines.push(`  ${c.dim}${time}${c.reset} ${levelIcon} ${module}${coloredMessage}`);
       }
     }
 
     return lines.join('\n');
+  }
+
+  private colorizeMessage(message: string, level: LogEntry['level']): string {
+    // Apply subtle coloring to message text based on level
+    // This enhances visual hierarchy while maintaining readability
+    switch (level) {
+      case 'error': return `${c.errorColor}${message}${c.reset}`;
+      case 'warn': return `${c.warnColor}${message}${c.reset}`;
+      case 'info': return `${c.white}${message}${c.reset}`;
+      case 'success': return `${c.successColor}${message}${c.reset}`;
+      case 'debug': return `${c.dim}${message}${c.reset}`;
+      default: return message;
+    }
   }
 
   private buildStatusBar(): string {
@@ -238,22 +276,25 @@ class TerminalUI {
   }
 
   private getStatusIcon(status: string): string {
+    // Enhanced status icons with bright colors for better visibility
     switch (status) {
-      case 'working': return `${c.yellow}◉${c.reset}`;
-      case 'completed': return `${c.green}✓${c.reset}`;
-      case 'failed': return `${c.red}✗${c.reset}`;
-      case 'assigned': return `${c.blue}○${c.reset}`;
+      case 'working': return `${c.brightYellow}◉${c.reset}`;
+      case 'completed': return `${c.successColor}✓${c.reset}`;
+      case 'failed': return `${c.errorColor}✗${c.reset}`;
+      case 'assigned': return `${c.brightBlue}○${c.reset}`;
       default: return `${c.dim}○${c.reset}`;
     }
   }
 
   private getLevelIcon(level: LogEntry['level']): string {
+    // Enhanced styling with semantic colors and bold emphasis
+    // Icons are chosen for readability and universal terminal support
     switch (level) {
-      case 'info': return `${c.blue}ℹ${c.reset}`;
-      case 'success': return `${c.green}✓${c.reset}`;
-      case 'warn': return `${c.yellow}⚠${c.reset}`;
-      case 'error': return `${c.red}✗${c.reset}`;
-      case 'debug': return `${c.dim}●${c.reset}`;
+      case 'info': return `${c.infoColor}●${c.reset}`;           // Bright cyan circle
+      case 'success': return `${c.successColor}✓${c.reset}`;     // Bright green checkmark
+      case 'warn': return `${c.warnColor}▲${c.reset}`;           // Bright yellow triangle (more visible than ⚠)
+      case 'error': return `${c.errorColor}✖${c.reset}`;         // Bright red + bold X (highly visible)
+      case 'debug': return `${c.dim}●${c.reset}`;                // Unchanged: dim circle
       default: return ' ';
     }
   }
