@@ -6,6 +6,7 @@ import { TargetRepoStep } from './steps/TargetRepoStep.js';
 import { WorkspaceSlugStep } from './steps/WorkspaceSlugStep.js';
 import { NgrokStep } from './steps/NgrokStep.js';
 import { LinearOAuthStep } from './steps/LinearOAuthStep.js';
+import { LinearCredentialsStep } from './steps/LinearCredentialsStep.js';
 import { LinearTeamStep } from './steps/LinearTeamStep.js';
 import { AnthropicStep } from './steps/AnthropicStep.js';
 import { GitHubStep } from './steps/GitHubStep.js';
@@ -53,7 +54,7 @@ const INITIAL_STATE: SetupState = {
   maxCodeExecutors: 1,
 };
 
-const TOTAL_STEPS = 9;
+const TOTAL_STEPS = 10;
 
 type Step =
   | 'welcome'
@@ -61,6 +62,7 @@ type Step =
   | 'workspace-slug'
   | 'ngrok'
   | 'linear-oauth'
+  | 'linear-credentials'
   | 'linear-team'
   | 'anthropic'
   | 'github'
@@ -73,6 +75,7 @@ const STEP_ORDER: Step[] = [
   'workspace-slug',
   'ngrok',
   'linear-oauth',
+  'linear-credentials',
   'linear-team',
   'anthropic',
   'github',
@@ -165,11 +168,26 @@ export const App: React.FC = () => {
           <LinearOAuthStep
             workspaceSlug={state.workspaceSlug}
             ngrokUrl={state.ngrokUrl}
-            onComplete={(clientId, clientSecret, webhookSecret) => {
+            onComplete={(webhookSecret) => {
+              updateState({ linearWebhookSecret: webhookSecret });
+              goToNextStep();
+            }}
+          />
+        </StepContainer>
+      );
+
+    case 'linear-credentials':
+      return (
+        <StepContainer
+          step={5}
+          totalSteps={TOTAL_STEPS}
+          title="Linear Client Credentials"
+        >
+          <LinearCredentialsStep
+            onComplete={(clientId, clientSecret) => {
               updateState({
                 linearClientId: clientId,
                 linearClientSecret: clientSecret,
-                linearWebhookSecret: webhookSecret,
               });
               goToNextStep();
             }}
@@ -180,7 +198,7 @@ export const App: React.FC = () => {
     case 'linear-team':
       return (
         <StepContainer
-          step={5}
+          step={6}
           totalSteps={TOTAL_STEPS}
           title="Linear Team"
           description="Select the team TaskAgent will work with"
@@ -199,7 +217,7 @@ export const App: React.FC = () => {
     case 'anthropic':
       return (
         <StepContainer
-          step={6}
+          step={7}
           totalSteps={TOTAL_STEPS}
           title="Anthropic API"
         >
@@ -217,7 +235,7 @@ export const App: React.FC = () => {
     case 'github':
       return (
         <StepContainer
-          step={7}
+          step={8}
           totalSteps={TOTAL_STEPS}
           title="GitHub Repository"
           description="The repository where agents will create branches and PRs"
@@ -236,7 +254,7 @@ export const App: React.FC = () => {
     case 'concurrency':
       return (
         <StepContainer
-          step={8}
+          step={9}
           totalSteps={TOTAL_STEPS}
           title="Agent Configuration"
         >
@@ -254,7 +272,7 @@ export const App: React.FC = () => {
     case 'complete':
       return (
         <StepContainer
-          step={9}
+          step={10}
           totalSteps={TOTAL_STEPS}
           title="Setup Complete"
         >
