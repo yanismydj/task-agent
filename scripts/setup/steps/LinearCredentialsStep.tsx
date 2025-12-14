@@ -47,6 +47,11 @@ export const LinearCredentialsStep: React.FC<LinearCredentialsStepProps> = ({
         <Box marginTop={1}>
           <Text>Enter the Client ID:</Text>
         </Box>
+        {currentClientId && (
+          <Box marginTop={1}>
+            <Text dimColor>(Press Enter to keep existing value)</Text>
+          </Box>
+        )}
         <Box marginTop={1}>
           <TextInput
             defaultValue={currentClientId}
@@ -67,6 +72,11 @@ export const LinearCredentialsStep: React.FC<LinearCredentialsStepProps> = ({
     return (
       <Box flexDirection="column">
         <Text>Enter the Client Secret:</Text>
+        {currentClientSecret && (
+          <Box marginTop={1}>
+            <Text dimColor>(Press Enter to keep existing value)</Text>
+          </Box>
+        )}
         <Box marginTop={1}>
           <PasswordInput
             defaultValue={currentClientSecret}

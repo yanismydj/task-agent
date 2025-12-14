@@ -71,6 +71,11 @@ export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
 
       <Box marginTop={2} flexDirection="column">
         <Text>6. Enter the <Text bold>Webhook signing secret</Text> from the webhook section:</Text>
+        {currentWebhookSecret && (
+          <Box marginTop={1}>
+            <Text dimColor>(Press Enter to keep existing value)</Text>
+          </Box>
+        )}
         <Box marginTop={1}>
           <PasswordInput
             defaultValue={currentWebhookSecret}
