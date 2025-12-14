@@ -15,7 +15,7 @@ const LINEAR_TOKEN_URL = 'https://api.linear.app/oauth/token';
 const LINEAR_REVOKE_URL = 'https://api.linear.app/oauth/revoke';
 
 const CALLBACK_PORT = 3456;
-const CALLBACK_PATH = '/webhook/oauth/callback';
+const CALLBACK_PATH = '/oauth/callback';
 const DEFAULT_REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
 
 // Scopes needed for TaskAgent
