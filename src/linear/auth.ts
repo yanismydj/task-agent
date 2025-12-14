@@ -16,7 +16,7 @@ const LINEAR_REVOKE_URL = 'https://api.linear.app/oauth/revoke';
 
 const CALLBACK_PORT = 3456;
 const CALLBACK_PATH = '/oauth/callback';
-const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
+const DEFAULT_REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
 
 // Scopes needed for TaskAgent
 // See: https://linear.app/developers/oauth-actor-authorization
@@ -194,7 +194,7 @@ export class LinearAuth {
   private buildAuthUrl(state: string): string {
     const params = new URLSearchParams({
       client_id: this.clientId,
-      redirect_uri: REDIRECT_URI,
+      redirect_uri: DEFAULT_REDIRECT_URI,
       response_type: 'code',
       scope: SCOPES.join(','),
       state,
@@ -283,7 +283,7 @@ export class LinearAuth {
         grant_type: 'authorization_code',
         client_id: this.clientId,
         client_secret: this.clientSecret,
-        redirect_uri: REDIRECT_URI,
+        redirect_uri: DEFAULT_REDIRECT_URI,
         code,
       }),
     });
