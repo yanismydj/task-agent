@@ -30,7 +30,7 @@
       "start": "node dist/index.js",
       "lint": "eslint src --ext .ts",
       "typecheck": "tsc --noEmit",
-      "init": "tsx scripts/init.ts",
+      "setup": "tsx scripts/setup.ts",
       "auth": "tsx scripts/auth.ts"
     },
     "dependencies": {

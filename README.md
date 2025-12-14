@@ -54,10 +54,10 @@ added 150 packages in 8s
 
 ### Quick Start with Interactive Setup (Recommended)
 
-The `init` command provides a guided setup experience that configures everything you need:
+The `setup` command provides a guided setup experience that configures everything you need:
 
 ```bash
-npm run init
+npm run setup
 ```
 
 This interactive CLI will:
