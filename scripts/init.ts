@@ -515,6 +515,119 @@ You'll be able to select your team in the next step.${colors.reset}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Trigger Labels Setup
+// ═══════════════════════════════════════════════════════════════════════════
+
+const TRIGGER_LABELS = [
+  { name: 'clarify', color: '#0ea5e9', description: 'Trigger TaskAgent to ask clarifying questions' },
+  { name: 'refine', color: '#8b5cf6', description: 'Trigger TaskAgent to refine/rewrite the description' },
+  { name: 'work', color: '#22c55e', description: 'Trigger TaskAgent to start working on this issue' },
+];
+
+async function createTriggerLabels(env: Map<string, string>): Promise<void> {
+  printSection('Creating Trigger Labels');
+
+  const apiKey = env.get('LINEAR_API_KEY');
+  const teamId = env.get('LINEAR_TEAM_ID');
+
+  // For OAuth, we need to check if token exists
+  const hasOAuth = env.get('LINEAR_CLIENT_ID') && env.get('LINEAR_CLIENT_SECRET');
+  const tokenExists = fs.existsSync(TOKEN_PATH) || fs.existsSync(LEGACY_TOKEN_PATH);
+
+  if (!teamId) {
+    printWarning('No team ID configured, skipping label creation');
+    return;
+  }
+
+  if (!apiKey && (!hasOAuth || !tokenExists)) {
+    printInfo('Labels will be created after OAuth authorization');
+    console.log(`
+${colors.dim}You can also create these labels manually in Linear:
+  - clarify: Trigger TaskAgent to ask clarifying questions
+  - refine: Trigger TaskAgent to refine/rewrite the description
+  - work: Trigger TaskAgent to start working on this issue${colors.reset}
+`);
+    return;
+  }
+
+  console.log(`
+TaskAgent uses labels to trigger actions on issues.
+Creating the following trigger labels in your Linear team:
+
+  ${colors.cyan}clarify${colors.reset} - Ask clarifying questions
+  ${colors.cyan}refine${colors.reset}  - Rewrite/improve the description
+  ${colors.cyan}work${colors.reset}    - Start working on the issue
+`);
+
+  const create = await promptYesNo('Create trigger labels now?', true);
+  if (!create) {
+    printInfo('Skipping label creation. You can create them manually in Linear.');
+    return;
+  }
+
+  try {
+    // Dynamic import to avoid issues if @linear/sdk isn't installed yet
+    const { LinearClient } = await import('@linear/sdk');
+
+    let client: InstanceType<typeof LinearClient>;
+
+    if (apiKey) {
+      client = new LinearClient({ apiKey });
+    } else if (hasOAuth && tokenExists) {
+      // Read OAuth token
+      const tokenPath = fs.existsSync(TOKEN_PATH) ? TOKEN_PATH : LEGACY_TOKEN_PATH;
+      const tokenData = JSON.parse(fs.readFileSync(tokenPath, 'utf-8'));
+      client = new LinearClient({ accessToken: tokenData.access_token });
+    } else {
+      printWarning('No valid credentials for label creation');
+      return;
+    }
+
+    // Get existing labels for the team
+    const team = await client.team(teamId);
+    const existingLabels = await team.labels();
+    const existingNames = new Set(existingLabels.nodes.map(l => l.name.toLowerCase()));
+
+    let created = 0;
+    let skipped = 0;
+
+    for (const label of TRIGGER_LABELS) {
+      if (existingNames.has(label.name.toLowerCase())) {
+        printInfo(`Label "${label.name}" already exists`);
+        skipped++;
+      } else {
+        try {
+          await client.createIssueLabel({
+            name: label.name,
+            color: label.color,
+            description: label.description,
+            teamId,
+          });
+          printSuccess(`Created label "${label.name}"`);
+          created++;
+        } catch (error) {
+          printWarning(`Failed to create label "${label.name}": ${error instanceof Error ? error.message : error}`);
+        }
+      }
+    }
+
+    if (created > 0) {
+      console.log(`\n${icons.check} Created ${created} trigger label(s)`);
+    }
+    if (skipped > 0) {
+      console.log(`${icons.info} ${skipped} label(s) already existed`);
+    }
+
+  } catch (error) {
+    printWarning(`Failed to create labels: ${error instanceof Error ? error.message : error}`);
+    console.log(`
+${colors.dim}You can create these labels manually in Linear:
+  Settings > Team Settings > Labels > New Label${colors.reset}
+`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Anthropic Setup
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1608,10 +1721,13 @@ async function main(): Promise<void> {
     // Reload env after OAuth might have fetched team info
     const finalEnv = loadEnvFile();
 
-    // Step 12: Verify
+    // Step 12: Create trigger labels
+    await createTriggerLabels(finalEnv);
+
+    // Step 13: Verify
     const verified = verifySetup(finalEnv);
 
-    // Step 13: Next steps
+    // Step 14: Next steps
     printNextSteps(finalEnv);
 
     if (!verified) {

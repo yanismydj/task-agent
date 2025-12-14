@@ -53,6 +53,8 @@ Only recommend action 'ready' if:
 1. The readiness score is 70 or above, AND
 2. The ticket is truly well-specified with clear acceptance criteria
 
+**FORCE CLARIFICATION MODE**: When "FORCE_ASK_QUESTIONS: true" appears in the context, the user has explicitly requested clarifying questions via the "clarify" label. In this mode, you MUST ask at least one thoughtful clarifying question, even if the ticket seems well-specified. Find something to clarify - edge cases, error handling, scope boundaries, testing approach, etc.
+
 If there are external blockers (dependencies, access needed, etc.), recommend action 'blocked'.`;
 
 const REFINER_SCHEMA = {
@@ -141,9 +143,46 @@ export class TicketRefinerAgent extends BaseAgent<TicketRefinerInput, TicketRefi
       // Filter out questions that have already been answered
       const filteredResult = this.filterAnsweredQuestions(result, input.data.existingComments);
 
+      // Check if forceAskQuestions is set (user explicitly wants clarification via "clarify" label)
+      const forceAskQuestions = input.data.forceAskQuestions;
+      if (forceAskQuestions && filteredResult.action === 'ready') {
+        // User explicitly requested questions - we MUST ask something
+        if (filteredResult.questions.length > 0) {
+          logger.info(
+            {
+              ticketId: input.ticketIdentifier,
+              questionCount: filteredResult.questions.length,
+            },
+            'Overriding ready→ask_questions due to forceAskQuestions flag'
+          );
+          filteredResult.action = 'ask_questions';
+        } else {
+          // No questions from Claude - generate default clarifying questions
+          logger.info(
+            { ticketId: input.ticketIdentifier },
+            'forceAskQuestions set but no questions generated - adding default questions'
+          );
+          filteredResult.action = 'ask_questions';
+          filteredResult.questions = [
+            {
+              question: 'What edge cases or error scenarios should be handled?',
+              options: ['Invalid input handling', 'Network failures', 'Empty/null data', 'Concurrent access', 'Other (please specify)'],
+              allowMultiple: true,
+              priority: 'important',
+            },
+            {
+              question: 'What level of test coverage is expected?',
+              options: ['Unit tests only', 'Unit + integration tests', 'Full coverage with e2e tests', 'No tests needed'],
+              allowMultiple: false,
+              priority: 'important',
+            },
+          ];
+        }
+      }
+
       // Check if readiness score is below threshold
       const readinessScore = input.data.readinessResult.score;
-      if (readinessScore < READY_THRESHOLD && filteredResult.action === 'ready') {
+      if (!forceAskQuestions && readinessScore < READY_THRESHOLD && filteredResult.action === 'ready') {
         // Refiner says ready but score is low - only override if we have actual questions to ask
         // If refiner has no questions, trust its judgment and proceed to approval
         // (The human can reject if they disagree)
@@ -194,9 +233,16 @@ export class TicketRefinerAgent extends BaseAgent<TicketRefinerInput, TicketRefi
   }
 
   private buildContext(input: AgentInput<TicketRefinerInput>): string {
-    const { title, description, readinessResult, existingComments, codebaseContext } = input.data;
+    const { title, description, readinessResult, existingComments, codebaseContext, forceAskQuestions } = input.data;
 
-    let context = `# Ticket: ${input.ticketIdentifier}
+    let context = `# Ticket: ${input.ticketIdentifier}`;
+
+    // Add force clarification indicator if set
+    if (forceAskQuestions) {
+      context += `\n\n**FORCE_ASK_QUESTIONS: true** - User explicitly requested clarifying questions. You MUST ask at least one question.`;
+    }
+
+    context += `
 
 ## Title
 ${title}

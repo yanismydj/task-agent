@@ -442,6 +442,8 @@ export class QueueProcessor {
           isFromTaskAgent: isTaskAgentComment(c.user),
         })),
         codebaseContext,
+        // Pass forceAskQuestions to agent so it knows to ask questions even if ticket looks ready
+        forceAskQuestions,
       },
     };
 

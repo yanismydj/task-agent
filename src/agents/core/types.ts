@@ -87,6 +87,9 @@ export const TicketRefinerInputSchema = z.object({
     createdAt: z.date(),
   })),
   codebaseContext: z.string().optional(),
+  // When true, MUST ask clarifying questions regardless of readiness score
+  // Used when user explicitly requests clarification via "clarify" label
+  forceAskQuestions: z.boolean().optional(),
 });
 
 export type TicketRefinerInput = z.infer<typeof TicketRefinerInputSchema>;
