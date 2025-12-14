@@ -23,6 +23,10 @@ class InkTerminalUI {
       return; // Already started
     }
 
+    // Clear the terminal for a fresh canvas
+    // Uses ANSI escape codes: clear screen + move cursor to top-left
+    process.stdout.write('\x1b[2J\x1b[H');
+
     // Render the Ink app
     this.inkInstance = render(
       <App
