@@ -28,9 +28,19 @@ export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
 
   useInput((input, key) => {
     if (key.return && currentField === 'instructions') {
-      setCurrentField('clientId');
+      setCurrentField('webhookSecret');
     }
   });
+
+  const handleWebhookSecretSubmit = (value: string) => {
+    if (!value.trim()) {
+      setError('Webhook signing secret is required');
+      return;
+    }
+    setError(null);
+    setWebhookSecret(value);
+    setCurrentField('clientId');
+  };
 
   const handleClientIdSubmit = (value: string) => {
     if (!value.trim()) {
@@ -49,17 +59,7 @@ export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
     }
     setError(null);
     setClientSecret(value);
-    setCurrentField('webhookSecret');
-  };
-
-  const handleWebhookSecretSubmit = (value: string) => {
-    if (!value.trim()) {
-      setError('Webhook signing secret is required');
-      return;
-    }
-    setError(null);
-    setWebhookSecret(value);
-    onComplete(clientId, clientSecret, value);
+    onComplete(clientId, value, webhookSecret);
   };
 
   if (currentField === 'instructions') {
@@ -98,8 +98,8 @@ export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
 
         <Box marginTop={1} flexDirection="column">
           <Text dimColor>After creating the app, Linear will show you:</Text>
-          <Text dimColor>   • Client ID and Client Secret (at the top)</Text>
           <Text dimColor>   • Webhook signing secret (scroll down to the webhook section)</Text>
+          <Text dimColor>   • Client ID and Client Secret (at the top)</Text>
         </Box>
 
         <Box marginTop={2}>
@@ -108,9 +108,9 @@ export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
 
         <Box marginTop={2} flexDirection="column">
           <Text>We'll ask you to enter these 3 values next:</Text>
-          <Text dimColor>   1. Client ID</Text>
-          <Text dimColor>   2. Client Secret</Text>
-          <Text dimColor>   3. Webhook signing secret</Text>
+          <Text dimColor>   1. Webhook signing secret (scroll down to webhook section)</Text>
+          <Text dimColor>   2. Client ID (at the top of the page)</Text>
+          <Text dimColor>   3. Client Secret (at the top of the page)</Text>
         </Box>
 
         <Box marginTop={2}>
@@ -120,10 +120,37 @@ export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
     );
   }
 
+  if (currentField === 'webhookSecret') {
+    return (
+      <Box flexDirection="column">
+        <Text bold>Webhook Signing Secret</Text>
+        <Text dimColor>Scroll down on your Linear OAuth app page to find the webhook section.</Text>
+        <Text dimColor>Copy the "Signing secret" value.</Text>
+
+        <Box marginTop={1}>
+          <Text>Enter the Webhook signing secret:</Text>
+        </Box>
+        <Box marginTop={1}>
+          <PasswordInput placeholder="webhook-signing-secret" onSubmit={handleWebhookSecretSubmit} />
+        </Box>
+        {error && (
+          <Box marginTop={1}>
+            <Text color="red">✗ {error}</Text>
+          </Box>
+        )}
+      </Box>
+    );
+  }
+
   if (currentField === 'clientId') {
     return (
       <Box flexDirection="column">
-        <Text>Enter the Client ID from Linear:</Text>
+        <Text bold>Client Credentials</Text>
+        <Text dimColor>Now scroll back up to the top of the page to find the Client ID.</Text>
+
+        <Box marginTop={1}>
+          <Text>Enter the Client ID from Linear:</Text>
+        </Box>
         <Box marginTop={1}>
           <TextInput placeholder="client-id" onSubmit={handleClientIdSubmit} />
         </Box>
@@ -142,28 +169,6 @@ export const LinearOAuthStep: React.FC<LinearOAuthStepProps> = ({
         <Text>Enter the Client Secret from Linear:</Text>
         <Box marginTop={1}>
           <PasswordInput placeholder="client-secret" onSubmit={handleClientSecretSubmit} />
-        </Box>
-        {error && (
-          <Box marginTop={1}>
-            <Text color="red">✗ {error}</Text>
-          </Box>
-        )}
-      </Box>
-    );
-  }
-
-  if (currentField === 'webhookSecret') {
-    return (
-      <Box flexDirection="column">
-        <Text bold>Webhook Signing Secret</Text>
-        <Text dimColor>Scroll down on your Linear OAuth app page to find the webhook section.</Text>
-        <Text dimColor>Copy the "Signing secret" value.</Text>
-
-        <Box marginTop={1}>
-          <Text>Enter the Webhook signing secret:</Text>
-        </Box>
-        <Box marginTop={1}>
-          <PasswordInput placeholder="webhook-signing-secret" onSubmit={handleWebhookSecretSubmit} />
         </Box>
         {error && (
           <Box marginTop={1}>
