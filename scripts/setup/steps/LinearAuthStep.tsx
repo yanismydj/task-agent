@@ -40,7 +40,7 @@ export const LinearAuthStep: React.FC<LinearAuthStepProps> = ({
     try {
       // Use ngrok URL for redirect if available
       // Ngrok forwards to port 4847, so we need to listen on that port for the callback
-      const redirectUri = ngrokUrl ? `${ngrokUrl}/oauth/callback` : undefined;
+      const redirectUri = ngrokUrl ? `${ngrokUrl}/webhook/oauth/callback` : undefined;
       const callbackPort = ngrokUrl ? 4847 : undefined;
       const auth = new LinearAuth({ clientId, clientSecret, redirectUri, callbackPort });
 
