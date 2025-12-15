@@ -10,7 +10,7 @@ const logger = createChildLogger({ module: 'queue-database' });
 
 let db: Database.Database | null = null;
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 const MIGRATIONS: Record<number, string[]> = {
   1: [
@@ -312,6 +312,14 @@ const MIGRATIONS: Record<number, string[]> = {
      ON claude_code_sessions(session_id)`,
 
     `INSERT OR REPLACE INTO schema_version (version) VALUES (7)`,
+  ],
+
+  // Migration 8: Add PR creation retry tracking
+  // Track retry attempts specifically for PR creation validation
+  8: [
+    `ALTER TABLE claude_code_queue ADD COLUMN pr_creation_retry_count INTEGER NOT NULL DEFAULT 0`,
+
+    `INSERT OR REPLACE INTO schema_version (version) VALUES (8)`,
   ],
 };
 
