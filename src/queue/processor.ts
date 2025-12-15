@@ -1038,6 +1038,9 @@ export class QueueProcessor {
     // Post acknowledgement
     await linearClient.addComment(task.ticketId, 'Entering planning mode to gather requirements...');
 
+    // Track planning start time for file detection
+    const planningStartTime = Date.now();
+
     // Create worktree for the planning session
     const worktree = await worktreeManager.create(ticket.identifier);
 
@@ -1055,6 +1058,9 @@ export class QueueProcessor {
     };
 
     const result = await plannerAgent.execute(plannerInput);
+
+    // Try to attach plan file if one was created
+    await this.attachPlanFileIfExists(task.ticketId, task.ticketIdentifier, planningStartTime);
 
     // Clean up worktree
     await worktreeManager.remove(ticket.identifier);
@@ -1607,6 +1613,108 @@ ${ticket.description || ''}`;
     });
 
     return hasUncheckedBoxes;
+  }
+
+  /**
+   * Attempt to attach a plan file from ~/.claude/plans/ to the Linear ticket
+   * This runs after planning mode completes and looks for plan files modified after planning started
+   * @param ticketId - Linear ticket ID
+   * @param ticketIdentifier - Ticket identifier (e.g. TAS-75)
+   * @param planningStartTime - Timestamp when planning started (in ms)
+   */
+  private async attachPlanFileIfExists(
+    ticketId: string,
+    ticketIdentifier: string,
+    planningStartTime: number
+  ): Promise<void> {
+    try {
+      const fs = await import('node:fs/promises');
+      const path = await import('node:path');
+      const os = await import('node:os');
+
+      // Construct path to ~/.claude/plans/
+      const homeDir = os.homedir();
+      const plansDir = path.join(homeDir, '.claude', 'plans');
+
+      // Check if directory exists
+      try {
+        await fs.access(plansDir);
+      } catch {
+        logger.debug({ ticketId: ticketIdentifier }, 'Plans directory does not exist, skipping attachment');
+        return;
+      }
+
+      // List all files in the plans directory
+      const files = await fs.readdir(plansDir);
+      const mdFiles = files.filter(f => f.endsWith('.md'));
+
+      if (mdFiles.length === 0) {
+        logger.debug({ ticketId: ticketIdentifier }, 'No plan files found in ~/.claude/plans/');
+        return;
+      }
+
+      // Find files modified after planning started
+      const recentPlanFiles: Array<{ file: string; mtime: number }> = [];
+      for (const file of mdFiles) {
+        const filePath = path.join(plansDir, file);
+        try {
+          const stats = await fs.stat(filePath);
+          const mtimeMs = stats.mtimeMs;
+
+          // Check if file was modified after planning started
+          if (mtimeMs >= planningStartTime) {
+            recentPlanFiles.push({ file, mtime: mtimeMs });
+            logger.debug(
+              { ticketId: ticketIdentifier, file, mtime: new Date(mtimeMs).toISOString() },
+              'Found plan file modified after planning started'
+            );
+          }
+        } catch (error) {
+          logger.warn({ ticketId: ticketIdentifier, file, error }, 'Failed to stat plan file');
+        }
+      }
+
+      if (recentPlanFiles.length === 0) {
+        logger.debug({ ticketId: ticketIdentifier }, 'No plan files modified during planning session');
+        return;
+      }
+
+      // Sort by modification time (most recent first) and take the first one
+      recentPlanFiles.sort((a, b) => b.mtime - a.mtime);
+      const planFile = recentPlanFiles[0];
+
+      if (!planFile) {
+        logger.warn({ ticketId: ticketIdentifier }, 'No plan file found after sorting');
+        return;
+      }
+
+      const planFilePath = path.join(plansDir, planFile.file);
+      logger.info(
+        { ticketId: ticketIdentifier, planFile: planFile.file },
+        'Attaching plan file to Linear ticket'
+      );
+
+      // Upload the plan file
+      const attachment = await linearClient.uploadPlanFile(ticketId, planFilePath, planFile.file);
+
+      if (attachment) {
+        logger.info(
+          { ticketId: ticketIdentifier, planFile: planFile.file, attachmentId: attachment.id },
+          'Successfully attached plan file to ticket'
+        );
+      } else {
+        logger.warn(
+          { ticketId: ticketIdentifier, planFile: planFile.file },
+          'Failed to attach plan file (non-fatal)'
+        );
+      }
+    } catch (error) {
+      // Log error but don't throw - attachment failure shouldn't break the workflow
+      logger.error(
+        { ticketId: ticketIdentifier, error: error instanceof Error ? error.message : String(error) },
+        'Error while trying to attach plan file (non-fatal)'
+      );
+    }
   }
 }
 

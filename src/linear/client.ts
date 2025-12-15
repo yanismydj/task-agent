@@ -12,7 +12,8 @@ import { createChildLogger } from '../utils/logger.js';
 import { initializeAuth, getAuth } from './auth.js';
 import { linearCache } from './cache.js';
 import { getDatabase } from '../queue/database.js';
-import type { TicketInfo, TicketComment, TicketUpdate, ProjectLead, CommentInfo } from './types.js';
+import type { TicketInfo, TicketComment, TicketUpdate, ProjectLead, CommentInfo, FileUploadResponse, AttachmentCreateResponse } from './types.js';
+import mime from 'mime-types';
 
 const logger = createChildLogger({ module: 'linear-client' });
 
@@ -1156,6 +1157,152 @@ export class LinearApiClient {
       logger.info({ sessionId }, 'Marked agent session as errored');
     } catch (error) {
       logger.debug({ sessionId, error }, 'Failed to mark agent session as errored');
+    }
+  }
+
+  // ============================================================
+  // File Upload Support
+  // ============================================================
+
+  /**
+   * Request a pre-signed upload URL from Linear
+   * Step 1 of the file upload process
+   * @param filename - Name of the file to upload
+   * @param size - Size of the file in bytes
+   * @returns Upload URL and asset URL
+   */
+  async requestFileUpload(filename: string, size: number): Promise<{ uploadUrl: string; assetUrl: string }> {
+    logger.debug({ filename, size }, 'Requesting file upload URL');
+
+    return this.withRetry(async (client) => {
+      // Use raw GraphQL mutation for fileUpload
+      // Linear SDK doesn't have a typed method for this yet
+      const query = `
+        mutation FileUpload($size: Int!, $contentType: String!, $filename: String!) {
+          fileUpload(size: $size, contentType: $contentType, filename: $filename) {
+            uploadUrl
+            assetUrl
+          }
+        }
+      `;
+
+      const contentType = mime.lookup(filename) || 'application/octet-stream';
+      const variables = {
+        size,
+        contentType,
+        filename,
+      };
+
+      const response = await client.client.rawRequest<FileUploadResponse, typeof variables>(query, variables);
+
+      if (!response.data?.uploadFile) {
+        throw new Error('Failed to get upload URL from Linear');
+      }
+
+      logger.debug({ filename, uploadUrl: response.data.uploadFile.uploadUrl }, 'Received upload URL');
+      return response.data.uploadFile;
+    });
+  }
+
+  /**
+   * Upload file content to the pre-signed URL
+   * Step 2 of the file upload process
+   * @param uploadUrl - Pre-signed URL from requestFileUpload
+   * @param fileContent - File content as Buffer
+   * @param contentType - MIME type of the file
+   */
+  async uploadFileContent(uploadUrl: string, fileContent: Buffer, contentType: string): Promise<void> {
+    logger.debug({ contentType, size: fileContent.length }, 'Uploading file content');
+
+    // Use fetch to upload the file via HTTP PUT
+    // This doesn't go through Linear's GraphQL API
+    const response = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': contentType,
+        'Content-Length': String(fileContent.length),
+      },
+      body: fileContent,
+    });
+
+    if (!response.ok) {
+      throw new Error(`File upload failed with status ${response.status}: ${response.statusText}`);
+    }
+
+    logger.debug({ status: response.status }, 'File content uploaded successfully');
+  }
+
+  /**
+   * Create an attachment record in Linear after file upload
+   * Step 3 of the file upload process
+   * @param issueId - ID of the issue to attach to
+   * @param assetUrl - Asset URL from requestFileUpload
+   * @param filename - Original filename
+   */
+  async createAttachment(issueId: string, assetUrl: string, filename: string): Promise<{ id: string; url: string }> {
+    logger.debug({ issueId, filename }, 'Creating attachment in Linear');
+
+    return this.withRetry(async (client) => {
+      // Use raw GraphQL mutation for attachmentCreate
+      const query = `
+        mutation AttachmentCreate($issueId: String!, $url: String!, $title: String!) {
+          attachmentCreate(input: { issueId: $issueId, url: $url, title: $title }) {
+            success
+            attachment {
+              id
+              url
+            }
+          }
+        }
+      `;
+
+      const variables = {
+        issueId,
+        url: assetUrl,
+        title: filename,
+      };
+
+      const response = await client.client.rawRequest<AttachmentCreateResponse, typeof variables>(query, variables);
+
+      if (!response.data?.attachmentCreate?.success || !response.data.attachmentCreate.attachment) {
+        throw new Error('Failed to create attachment in Linear');
+      }
+
+      logger.info({ issueId, filename, attachmentId: response.data.attachmentCreate.attachment.id }, 'Attachment created');
+      return response.data.attachmentCreate.attachment;
+    });
+  }
+
+  /**
+   * Upload a plan file to Linear as an attachment
+   * This is a convenience method that combines all three steps
+   * @param issueId - ID of the issue to attach to
+   * @param filePath - Path to the file to upload
+   * @param filename - Name to use for the attachment
+   */
+  async uploadPlanFile(issueId: string, filePath: string, filename: string): Promise<{ id: string; url: string } | null> {
+    try {
+      logger.info({ issueId, filePath, filename }, 'Starting plan file upload');
+
+      // Read file content
+      const fs = await import('node:fs/promises');
+      const fileContent = await fs.readFile(filePath);
+      const contentType = mime.lookup(filename) || 'application/octet-stream';
+
+      // Step 1: Request upload URL
+      const { uploadUrl, assetUrl } = await this.requestFileUpload(filename, fileContent.length);
+
+      // Step 2: Upload file content
+      await this.uploadFileContent(uploadUrl, fileContent, contentType);
+
+      // Step 3: Create attachment
+      const attachment = await this.createAttachment(issueId, assetUrl, filename);
+
+      logger.info({ issueId, filename, attachmentId: attachment.id }, 'Plan file uploaded successfully');
+      return attachment;
+    } catch (error) {
+      logger.error({ issueId, filePath, error }, 'Failed to upload plan file');
+      return null;
     }
   }
 
