@@ -1,13 +1,13 @@
 # TaskAgent
 
-[very alpha!] TaskAgent is the pursuit of Kaizen in software. It inverts the human-agent relationship: instead of humans directing coding agents, coding agents request human input when needed. It acts as an assistant PM, keeping coding agents busy and productive. It has two core responsibilities:
+[very alpha!] TaskAgent inverts the human-agent relationship: instead of humans directing coding agents, coding agents request human input when needed. It acts as an assistant PM, keeping coding agents busy and productive. It has two core responsibilities:
 
-**Ticket Refinement** — Proactively improves tickets by asking clarifying questions, filling in implementation details, and ensuring work specifications match end-user intent.
+**Ticket Refinement** — Proactively improves tickets by asking clarifying questions (powered by claude code plan mode), filling in implementation details, and ensuring work specifications match end-user intent.
 
 **Coding Agent Orchestration** — Assigns work to coding agents, monitors progress, and manages their lifecycle.
 
-<!-- Screenshot: Application overview -->
-<!-- TODO: Add screenshot here -->
+![ta-ss](https://github.com/user-attachments/assets/29727777-f7ad-4cf5-a0c0-933e95cd7c0b)
+
 
 ## Setup
 
@@ -18,8 +18,8 @@ npm run setup
 
 The interactive setup will configure Linear OAuth, Anthropic API access, and your target repository.
 
-<!-- Screenshot: Setup screen -->
-<!-- TODO: Add setup screen screenshot here -->
+![ta-setup](https://github.com/user-attachments/assets/c4124547-7f2c-4da0-8aeb-204cd16b1b6e)
+
 
 ## Usage
 
