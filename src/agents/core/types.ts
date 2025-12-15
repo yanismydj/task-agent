@@ -6,7 +6,8 @@ export type AgentType =
   | 'prompt-generator'
   | 'code-executor'
   | 'planner'
-  | 'plan-consolidator';
+  | 'plan-consolidator'
+  | 'plan-question-extractor';
 
 export type ModelTier = 'fast' | 'standard' | 'advanced';
 

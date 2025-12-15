@@ -16,6 +16,7 @@ const DEFAULT_TTL: Record<AgentType, number> = {
   'code-executor': 0, // Never cache
   'planner': 0, // Never cache (planning is interactive)
   'plan-consolidator': 60 * 60 * 1000, // 1 hour
+  'plan-question-extractor': 0, // Never cache (depends on raw output)
 };
 
 interface CacheEntry {

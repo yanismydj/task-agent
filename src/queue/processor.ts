@@ -16,6 +16,7 @@ import {
   descriptionConsolidatorAgent,
   plannerAgent,
   planConsolidatorAgent,
+  planQuestionExtractorAgent,
 } from '../agents/impl/index.js';
 import type {
   AgentInput,
@@ -27,6 +28,7 @@ import type {
 import type { DescriptionConsolidatorInput } from '../agents/impl/description-consolidator.js';
 import type { PlannerInput } from '../agents/impl/planner.js';
 import type { PlanConsolidatorInput } from '../agents/impl/plan-consolidator.js';
+import type { PlanQuestionExtractorInput } from '../agents/impl/plan-question-extractor.js';
 import type { SessionStatus } from '../sessions/storage.js';
 // descriptionApprovalManager is used by webhook handler for description rewrites
 // import { descriptionApprovalManager } from './description-approvals.js';
@@ -1018,8 +1020,8 @@ export class QueueProcessor {
 
   /**
    * Handle the @taskAgent plan command - enter planning mode with Claude Code.
-   * Claude will ask clarifying questions which are posted as individual comments.
-   * User responses are collected and consolidated into a plan.
+   * Claude will ask clarifying questions which are posted as individual comments
+   * with multiple-choice checkboxes for easy user response.
    */
   private async handlePlan(task: LinearQueueItem): Promise<void> {
     const ticket = await linearClient.getTicketCached(task.ticketId);
@@ -1066,21 +1068,47 @@ export class QueueProcessor {
       return;
     }
 
-    // Extract plan content from the output if available
-    // The planner output contains the raw conversation which may include a plan
-    const planContent = this.extractPlanFromOutput(result.data.output);
+    // Use the question extractor agent to get structured questions with multiple-choice options
+    // This replaces the old regex-based parseQuestions() approach
+    const extractorInput: AgentInput<PlanQuestionExtractorInput> = {
+      ticketId: task.ticketId,
+      ticketIdentifier: ticket.identifier,
+      data: {
+        ticketTitle: ticket.title,
+        ticketDescription: ticket.description || '',
+        rawPlanOutput: result.data.output,
+      },
+    };
 
-    // Also check for questions in the planner output
-    const extractedQuestions = result.data.questions || [];
+    const extractorResult = await planQuestionExtractorAgent.execute(extractorInput);
 
-    // Update ticket description with plan if we extracted one
-    // Questions should be posted as comments, not included in the description
-    if (planContent) {
-      logger.info(
-        { ticketId: task.ticketIdentifier, planLength: planContent.length },
-        'Updating ticket description with generated plan'
+    if (!extractorResult.success || !extractorResult.data) {
+      // Extraction failed - fall back to posting raw output
+      logger.warn(
+        { ticketId: task.ticketIdentifier, error: extractorResult.error },
+        'Question extraction failed, falling back to basic completion'
       );
+      await linearClient.addComment(
+        task.ticketId,
+        `Planning analysis complete. Use \`@taskAgent work\` to start implementation.\n\n_Note: Could not extract structured questions._`
+      );
+      linearQueue.complete(task.id, result.data);
+      return;
+    }
 
+    const { questions, planContent } = extractorResult.data;
+
+    logger.info(
+      {
+        ticketId: task.ticketIdentifier,
+        questionCount: questions.length,
+        planContentLength: planContent.length,
+      },
+      'Extracted structured questions from planning output'
+    );
+
+    // Update ticket description with plan content (questions already removed by extractor)
+    if (planContent && planContent.trim().length > 50) {
       const updatedDescription = `# Implementation Plan
 
 ${planContent}
@@ -1092,75 +1120,51 @@ ${planContent}
 ${ticket.description || ''}`;
 
       await linearClient.updateDescription(task.ticketId, updatedDescription);
-
-      // If there are questions, post them as individual comments (don't include in description)
-      if (extractedQuestions.length > 0) {
-        logger.info(
-          { ticketId: task.ticketIdentifier, questionCount: extractedQuestions.length },
-          'Posting planning questions as individual comments'
-        );
-
-        // Post each question as a separate comment
-        for (let i = 0; i < extractedQuestions.length; i++) {
-          const question = extractedQuestions[i];
-          const commentBody = `**Planning Question ${i + 1}/${extractedQuestions.length}**\n\n${question}`;
-          await linearClient.addComment(task.ticketId, commentBody);
-        }
-
-        // Register that we're waiting for answers
-        queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
-
-        await linearClient.addComment(
-          task.ticketId,
-          '✅ Planning complete! I\'ve updated the ticket description with the implementation plan and posted clarifying questions above.\n\nPlease answer the questions, then use `@taskAgent work` to start implementation.'
-        );
-
-        this.callbacks.onStateChange?.(task.ticketId, 'awaiting_planning_response');
-      } else {
-        await linearClient.addComment(
-          task.ticketId,
-          '✅ Planning complete! I\'ve updated the ticket description with the implementation plan.\n\nYou can now use `@taskAgent work` to start implementation.'
-        );
-      }
-
-      linearQueue.complete(task.id, result.data);
-      logger.info({ ticketId: task.ticketIdentifier }, 'Planning mode completed with plan');
-      return;
+      logger.info(
+        { ticketId: task.ticketIdentifier, planLength: planContent.length },
+        'Updated ticket description with implementation plan'
+      );
     }
 
-    // Post questions as individual comments if any were generated
-    const questions = extractedQuestions;
+    // Post questions as individual comments WITH checkboxes (matching clarify flow format)
     if (questions.length > 0) {
       logger.info(
         { ticketId: task.ticketIdentifier, questionCount: questions.length },
-        'Posting planning questions as individual comments'
+        'Posting planning questions as individual comments with checkboxes'
       );
 
-      // Post each question as a separate comment
-      for (let i = 0; i < questions.length; i++) {
-        const question = questions[i];
-        const commentBody = `**Planning Question ${i + 1}/${questions.length}**\n\n${question}`;
-        await linearClient.addComment(task.ticketId, commentBody);
+      for (const q of questions) {
+        // Format like the refiner does: emoji + question + options with checkboxes
+        const priorityEmoji = q.priority === 'critical' ? '❗' :
+                              q.priority === 'important' ? '❓' : '💭';
+        const selectHint = q.allowMultiple ? '(select all that apply)' : '(select one)';
+
+        let comment = `${priorityEmoji} ${q.question} ${selectHint}\n`;
+        for (const option of q.options) {
+          comment += `- [ ] ${option}\n`;
+        }
+
+        await linearClient.addComment(task.ticketId, comment.trim());
       }
 
       // Register that we're waiting for answers
       queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
 
-      this.callbacks.onStateChange?.(task.ticketId, 'awaiting_planning_response');
-    } else {
-      // No questions and no plan - planning complete but empty
-      logger.info(
-        { ticketId: task.ticketIdentifier },
-        'Planning mode generated no questions or plan - ticket may be ready'
-      );
-
       await linearClient.addComment(
         task.ticketId,
-        'Planning complete. No additional questions needed. You can now use `@taskAgent work` to start implementation.'
+        '✅ Planning complete! Please answer the questions above, then use `@taskAgent work` to start implementation.'
+      );
+
+      this.callbacks.onStateChange?.(task.ticketId, 'awaiting_planning_response');
+    } else {
+      // No questions - planning complete
+      await linearClient.addComment(
+        task.ticketId,
+        '✅ Planning complete! Use `@taskAgent work` to start implementation.'
       );
     }
 
-    linearQueue.complete(task.id, result.data);
+    linearQueue.complete(task.id, extractorResult.data);
     logger.info({ ticketId: task.ticketIdentifier }, 'Planning mode completed');
   }
 
@@ -1428,66 +1432,6 @@ ${ticket.description || ''}`;
 
     await linearClient.addComment(task.ticketId, commentBody);
     logger.info({ ticketId: task.ticketIdentifier }, 'Approval requested');
-  }
-
-  /**
-   * Extract plan content from planner output.
-   * Claude Code's plan mode may generate a structured plan in its output.
-   * This method extracts markdown content that looks like a plan.
-   */
-  private extractPlanFromOutput(output: string): string | null {
-    if (!output || output.trim().length === 0) {
-      return null;
-    }
-
-    // Try to extract plan from stream-json format output
-    // The output may contain JSON lines with assistant messages
-    const lines = output.split('\n');
-    let accumulatedText = '';
-
-    for (const line of lines) {
-      try {
-        const json = JSON.parse(line);
-        // Look for assistant messages with text content
-        if (json.type === 'assistant' && json.message?.content) {
-          for (const block of json.message.content) {
-            if (block.type === 'text' && block.text) {
-              accumulatedText += block.text + '\n';
-            }
-          }
-        } else if (json.type === 'content_block_delta' && json.delta?.text) {
-          accumulatedText += json.delta.text;
-        }
-      } catch {
-        // Not JSON, skip
-        continue;
-      }
-    }
-
-    // If we extracted meaningful text content, check if it looks like a plan
-    const trimmed = accumulatedText.trim();
-    if (trimmed.length > 100) {
-      // Check if it has plan-like structure (headers, lists, etc.)
-      const hasPlanStructure =
-        trimmed.includes('##') || // Has markdown headers
-        trimmed.includes('**') || // Has bold text
-        (trimmed.match(/^[-*]\s/gm) || []).length >= 3 || // Has multiple list items
-        trimmed.toLowerCase().includes('requirement') ||
-        trimmed.toLowerCase().includes('implementation') ||
-        trimmed.toLowerCase().includes('acceptance criteria');
-
-      if (hasPlanStructure) {
-        logger.debug({ length: trimmed.length }, 'Extracted plan from output');
-        return trimmed;
-      }
-    }
-
-    // Fallback: if output is plain text and substantial, use it
-    if (output.trim().length > 200 && !output.includes('{') && !output.includes('[')) {
-      return output.trim();
-    }
-
-    return null;
   }
 
   /**

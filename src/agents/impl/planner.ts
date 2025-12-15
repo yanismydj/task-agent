@@ -43,10 +43,9 @@ export type PlannerInput = z.infer<typeof PlannerInputSchema>;
 
 export const PlannerOutputSchema = z.object({
   success: z.boolean(),
-  questions: z.array(z.string()).optional(), // Questions Claude asked
   plan: z.string().optional(), // Final consolidated plan
   error: z.string().optional(),
-  output: z.string(), // Raw output for debugging
+  output: z.string(), // Raw output - question extraction is handled by PlanQuestionExtractorAgent
 });
 
 export type PlannerOutput = z.infer<typeof PlannerOutputSchema>;
@@ -253,13 +252,10 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
           'Planning mode process closed'
         );
 
-        // Parse questions from output
-        const questions = this.parseQuestions(output);
-
+        // Return raw output - question extraction is handled by PlanQuestionExtractorAgent
         if (code === 0) {
           resolve({
             success: true,
-            questions,
             output,
           });
         } else {
@@ -271,38 +267,6 @@ Please analyze this ticket and ask any clarifying questions needed to fully unde
         }
       });
     });
-  }
-
-  /**
-   * Parse questions from Claude Code output
-   * Questions typically appear in the output as numbered or bulleted items
-   */
-  private parseQuestions(output: string): string[] {
-    const questions: string[] = [];
-    const lines = output.split('\n');
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]?.trim();
-      if (!line) continue;
-
-      // Look for question patterns
-      // - Numbered: "1. What is..."
-      // - Bulleted: "- What is..."
-      // - Direct: "What is...?"
-      const numberedMatch = line.match(/^\d+\.\s+(.+\?)/);
-      const bulletMatch = line.match(/^[-*]\s+(.+\?)/);
-      const directMatch = line.match(/^([A-Z].+\?)\s*$/);
-
-      if (numberedMatch && numberedMatch[1]) {
-        questions.push(numberedMatch[1]);
-      } else if (bulletMatch && bulletMatch[1]) {
-        questions.push(bulletMatch[1]);
-      } else if (directMatch && directMatch[1] && !line.startsWith('//') && !line.startsWith('#')) {
-        questions.push(directMatch[1]);
-      }
-    }
-
-    return questions;
   }
 
   /**
