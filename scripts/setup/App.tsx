@@ -231,6 +231,7 @@ export const App: React.FC = () => {
             clientId={state.linearClientId}
             clientSecret={state.linearClientSecret}
             ngrokUrl={state.ngrokUrl}
+            ngrokCustomDomain={state.ngrokCustomDomain}
             onComplete={goToNextStep}
           />
         </StepContainer>

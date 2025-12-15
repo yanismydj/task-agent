@@ -2,24 +2,37 @@ import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { Spinner, StatusMessage } from '@inkjs/ui';
 import { LinearAuth } from '../../../src/linear/auth.js';
+import { LinearClient } from '@linear/sdk';
+import { startNgrok, stopNgrok } from '../../../src/utils/ngrok.js';
 
 interface LinearAuthStepProps {
   clientId: string;
   clientSecret: string;
   ngrokUrl: string | null;
+  ngrokCustomDomain?: string;
   onComplete: () => void;
 }
 
-type AuthState = 'ready' | 'authorizing' | 'success' | 'error';
+type AuthState = 'ready' | 'starting-ngrok' | 'authorizing' | 'success' | 'error';
 
 export const LinearAuthStep: React.FC<LinearAuthStepProps> = ({
   clientId,
   clientSecret,
   ngrokUrl,
+  ngrokCustomDomain,
   onComplete,
 }) => {
   const [authState, setAuthState] = useState<AuthState>('ready');
   const [error, setError] = useState<string | null>(null);
+
+  // Cleanup ngrok on unmount
+  useEffect(() => {
+    return () => {
+      if (ngrokCustomDomain) {
+        stopNgrok();
+      }
+    };
+  }, [ngrokCustomDomain]);
 
   useInput((input, key) => {
     if (key.return && authState === 'ready') {
@@ -27,13 +40,16 @@ export const LinearAuthStep: React.FC<LinearAuthStepProps> = ({
     }
     if (key.return && (authState === 'success' || authState === 'error')) {
       if (authState === 'success') {
+        // Stop ngrok before moving on
+        if (ngrokCustomDomain) {
+          stopNgrok();
+        }
         onComplete();
       }
     }
   });
 
   const startAuth = async () => {
-    setAuthState('authorizing');
     setError(null);
 
     try {
@@ -43,17 +59,37 @@ export const LinearAuthStep: React.FC<LinearAuthStepProps> = ({
       const callbackPort = ngrokUrl ? 4847 : undefined;
       const auth = new LinearAuth({ clientId, clientSecret, redirectUri, callbackPort });
 
-      // Check if we already have a valid token
+      // Check if we have a token that looks valid locally
       if (auth.hasValidToken()) {
-        setAuthState('success');
-        return;
+        // Verify the token is actually valid by making a test API call
+        try {
+          const accessToken = await auth.getAccessToken();
+          const client = new LinearClient({ accessToken });
+          await client.viewer; // Simple API call to verify token works
+          setAuthState('success');
+          return;
+        } catch {
+          // Token was revoked or invalid - clear it and re-authorize
+          auth.invalidateToken();
+        }
       }
 
+      // Start ngrok if we have a custom domain (need it for OAuth callback)
+      if (ngrokCustomDomain) {
+        setAuthState('starting-ngrok');
+        await startNgrok(4847, ngrokCustomDomain);
+      }
+
+      setAuthState('authorizing');
       await auth.authorize();
       setAuthState('success');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authorization failed');
       setAuthState('error');
+      // Stop ngrok on error
+      if (ngrokCustomDomain) {
+        stopNgrok();
+      }
     }
   };
 
@@ -72,6 +108,17 @@ export const LinearAuthStep: React.FC<LinearAuthStepProps> = ({
 
         <Box marginTop={2}>
           <Text color="cyan">Press Enter to open browser and authorize...</Text>
+        </Box>
+      </Box>
+    );
+  }
+
+  if (authState === 'starting-ngrok') {
+    return (
+      <Box flexDirection="column">
+        <Spinner label="Starting ngrok tunnel..." />
+        <Box marginTop={1}>
+          <Text dimColor>Setting up {ngrokCustomDomain} for OAuth callback.</Text>
         </Box>
       </Box>
     );
