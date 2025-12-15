@@ -69,3 +69,28 @@ export interface CommentInfo {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/**
+ * Response from fileUpload mutation
+ * Used to request a pre-signed URL for file upload
+ */
+export interface FileUploadResponse {
+  uploadFile: {
+    uploadUrl: string;
+    assetUrl: string;
+  };
+}
+
+/**
+ * Response from attachmentCreate mutation
+ * Used to create an attachment record after file upload
+ */
+export interface AttachmentCreateResponse {
+  attachmentCreate: {
+    success: boolean;
+    attachment?: {
+      id: string;
+      url: string;
+    };
+  };
+}

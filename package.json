@@ -35,12 +35,14 @@
     "dotenv": "^16.4.7",
     "ink": "^6.5.1",
     "ink-spinner": "^5.0.0",
+    "mime-types": "^2.1.35",
     "pino": "^9.6.0",
     "react": "^19.2.3",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/mime-types": "^2.1.4",
     "@types/node": "^22.10.2",
     "@types/react": "^19.2.7",
     "eslint": "^9.16.0",
