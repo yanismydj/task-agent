@@ -1070,7 +1070,11 @@ export class QueueProcessor {
     // The planner output contains the raw conversation which may include a plan
     const planContent = this.extractPlanFromOutput(result.data.output);
 
+    // Also check for questions in the planner output
+    const extractedQuestions = result.data.questions || [];
+
     // Update ticket description with plan if we extracted one
+    // Questions should be posted as comments, not included in the description
     if (planContent) {
       logger.info(
         { ticketId: task.ticketIdentifier, planLength: planContent.length },
@@ -1089,10 +1093,35 @@ ${ticket.description || ''}`;
 
       await linearClient.updateDescription(task.ticketId, updatedDescription);
 
-      await linearClient.addComment(
-        task.ticketId,
-        '✅ Planning complete! I\'ve updated the ticket description with the implementation plan.\n\nYou can now use `@taskAgent work` to start implementation.'
-      );
+      // If there are questions, post them as individual comments (don't include in description)
+      if (extractedQuestions.length > 0) {
+        logger.info(
+          { ticketId: task.ticketIdentifier, questionCount: extractedQuestions.length },
+          'Posting planning questions as individual comments'
+        );
+
+        // Post each question as a separate comment
+        for (let i = 0; i < extractedQuestions.length; i++) {
+          const question = extractedQuestions[i];
+          const commentBody = `**Planning Question ${i + 1}/${extractedQuestions.length}**\n\n${question}`;
+          await linearClient.addComment(task.ticketId, commentBody);
+        }
+
+        // Register that we're waiting for answers
+        queueScheduler.registerAwaitingResponse(task.ticketId, task.ticketIdentifier, 'questions');
+
+        await linearClient.addComment(
+          task.ticketId,
+          '✅ Planning complete! I\'ve updated the ticket description with the implementation plan and posted clarifying questions above.\n\nPlease answer the questions, then use `@taskAgent work` to start implementation.'
+        );
+
+        this.callbacks.onStateChange?.(task.ticketId, 'awaiting_planning_response');
+      } else {
+        await linearClient.addComment(
+          task.ticketId,
+          '✅ Planning complete! I\'ve updated the ticket description with the implementation plan.\n\nYou can now use `@taskAgent work` to start implementation.'
+        );
+      }
 
       linearQueue.complete(task.id, result.data);
       logger.info({ ticketId: task.ticketIdentifier }, 'Planning mode completed with plan');
@@ -1100,11 +1129,11 @@ ${ticket.description || ''}`;
     }
 
     // Post questions as individual comments if any were generated
-    const questions = result.data.questions || [];
+    const questions = extractedQuestions;
     if (questions.length > 0) {
       logger.info(
         { ticketId: task.ticketIdentifier, questionCount: questions.length },
-        'Posting planning questions'
+        'Posting planning questions as individual comments'
       );
 
       // Post each question as a separate comment
