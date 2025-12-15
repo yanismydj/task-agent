@@ -1379,7 +1379,170 @@ ${ticket.description || ''}`;
 
     claudeQueue.complete(task.id, result.data.prUrl ?? undefined);
 
+    // Validate PR URL presence before changing status to "In Review"
+    const MAX_PR_CREATION_RETRIES = 2;
+
+    if (!result.data.prUrl) {
+      // No PR URL detected - check if we should retry with explicit PR creation instructions
+      const currentRetryCount = task.prCreationRetryCount;
+
+      if (currentRetryCount < MAX_PR_CREATION_RETRIES) {
+        // Increment retry count
+        claudeQueue.incrementPrCreationRetry(task.id);
+
+        logger.warn(
+          {
+            ticketId: task.ticketIdentifier,
+            retryCount: currentRetryCount + 1,
+            maxRetries: MAX_PR_CREATION_RETRIES
+          },
+          'No PR URL detected - triggering retry with explicit PR creation instructions'
+        );
+
+        // Add comment explaining the retry
+        await linearClient.addComment(
+          task.ticketId,
+          `Work completed but no PR was created. Retrying with explicit PR creation instructions (attempt ${currentRetryCount + 1}/${MAX_PR_CREATION_RETRIES})...`
+        );
+
+        // Get the ticket to generate a new prompt with PR emphasis
+        const ticket = await linearClient.getTicketCached(task.ticketId);
+        if (!ticket) {
+          logger.error({ ticketId: task.ticketIdentifier }, 'Failed to fetch ticket for PR retry');
+          await linearClient.addComment(
+            task.ticketId,
+            `Failed to retry PR creation: Could not fetch ticket details.`
+          );
+          return;
+        }
+
+        // Fetch attachments
+        const attachments = await linearClient.getAttachments(task.ticketId);
+        const attachmentsForPrompt = attachments.map(a => ({
+          id: a.id,
+          title: a.title,
+          url: a.url,
+        }));
+
+        // Generate new prompt with EMPHATIC PR creation instructions
+        const prRetryPromptInput: AgentInput<PromptGeneratorInput> = {
+          ticketId: task.ticketId,
+          ticketIdentifier: task.ticketIdentifier,
+          data: {
+            ticket: {
+              identifier: ticket.identifier,
+              title: ticket.title,
+              description: ticket.description || '',
+              url: ticket.url,
+              attachments: attachmentsForPrompt.length > 0 ? attachmentsForPrompt : undefined,
+            },
+            constraints: {
+              branchNaming: `task-agent/${ticket.identifier.toLowerCase()}`,
+            },
+            // Add context that this is a PR creation retry
+            restartContext: {
+              previousAttemptCount: currentRetryCount,
+              previousStatus: 'completed',
+              newComments: [],
+              summary: `Previous attempt completed successfully but did not create a PR. This retry MUST create and push a PR.`,
+            },
+          },
+          context: { updatedAt: ticket.updatedAt },
+        };
+
+        const prRetryPromptResult = await promptGeneratorAgent.execute(prRetryPromptInput);
+
+        if (!prRetryPromptResult.success || !prRetryPromptResult.data) {
+          logger.error(
+            { ticketId: task.ticketIdentifier, error: prRetryPromptResult.error },
+            'Failed to generate PR retry prompt'
+          );
+          await linearClient.addComment(
+            task.ticketId,
+            `Failed to generate PR retry prompt: ${prRetryPromptResult.error || 'Unknown error'}`
+          );
+          return;
+        }
+
+        // Modify the generated prompt to add EMPHATIC PR creation instructions at the top
+        const emphasizedPrompt = `CRITICAL REQUIREMENT: You MUST create a pull request (PR) for this work.
+
+The previous attempt completed the implementation but failed to create a PR. This is a retry specifically to ensure a PR is created.
+
+INSTRUCTIONS:
+1. Review the changes that were made
+2. Commit all changes with a clear message referencing ${ticket.identifier}
+3. Push the branch to the remote repository
+4. CREATE A PULL REQUEST using the gh CLI or similar tool
+5. Ensure the PR URL is included in your final output
+
+DO NOT complete this task without creating a PR. The PR is MANDATORY.
+
+---
+
+${prRetryPromptResult.data.prompt}`;
+
+        // Save the modified prompt
+        savePromptToCache(`${ticket.identifier}-pr-retry-${currentRetryCount + 1}`, emphasizedPrompt);
+
+        // Create new worktree
+        const worktree = await worktreeManager.create(ticket.identifier);
+
+        // Create new agent session for the retry
+        const retrySession = await linearClient.createAgentSession(task.ticketId);
+        if (retrySession) {
+          agentSessions.set(task.ticketId, retrySession.id);
+          await linearClient.addAgentActivity(retrySession.id, 'thought', {
+            message: `Retrying with explicit PR creation instructions (attempt ${currentRetryCount + 1})`,
+          });
+        }
+
+        // Enqueue new execution with the emphasized prompt
+        const retryTask = claudeQueue.enqueue({
+          ticketId: task.ticketId,
+          ticketIdentifier: ticket.identifier,
+          priority: task.priority,
+          prompt: emphasizedPrompt,
+          worktreePath: worktree.path,
+          branchName: worktree.branch,
+          agentSessionId: retrySession?.id,
+        });
+
+        if (retryTask) {
+          logger.info(
+            { ticketId: ticket.identifier, taskId: retryTask.id },
+            'Successfully enqueued PR creation retry'
+          );
+        } else {
+          logger.error(
+            { ticketId: ticket.identifier },
+            'Failed to enqueue PR creation retry'
+          );
+        }
+
+        return; // Exit early - don't mark as complete yet
+      } else {
+        // Max retries exceeded
+        logger.error(
+          {
+            ticketId: task.ticketIdentifier,
+            retryCount: currentRetryCount,
+            maxRetries: MAX_PR_CREATION_RETRIES
+          },
+          'Max PR creation retries exceeded - marking as completed without PR'
+        );
+
+        await linearClient.addComment(
+          task.ticketId,
+          `Work completed after ${MAX_PR_CREATION_RETRIES} attempts, but no PR was created. Please create a PR manually.\n\n⚠️ **Action Required**: Create a pull request for branch \`task-agent/${task.ticketIdentifier.toLowerCase()}\``
+        );
+
+        // Fall through to normal completion (without PR URL)
+      }
+    }
+
     // Move issue to "In Review" state (not "Done" - human needs to review the PR)
+    // This only happens if we have a PR URL OR if we've exhausted retries
     await linearClient.setIssueInReview(task.ticketId);
 
     if (task.agentSessionId) {

@@ -22,6 +22,7 @@ export interface ClaudeQueueItem {
   branchName: string | null;
   prUrl: string | null;
   agentSessionId: string | null;
+  prCreationRetryCount: number;
 }
 
 interface DbRow {
@@ -43,6 +44,7 @@ interface DbRow {
   branch_name: string | null;
   pr_url: string | null;
   agent_session_id: string | null;
+  pr_creation_retry_count: number;
 }
 
 function rowToItem(row: DbRow): ClaudeQueueItem {
@@ -65,6 +67,7 @@ function rowToItem(row: DbRow): ClaudeQueueItem {
     branchName: row.branch_name,
     prUrl: row.pr_url,
     agentSessionId: row.agent_session_id,
+    prCreationRetryCount: row.pr_creation_retry_count,
   };
 }
 
@@ -502,6 +505,20 @@ export class ClaudeCodeQueue {
           updated_at = datetime('now')
       WHERE id = ?
     `).run(agentSessionId, id);
+  }
+
+  /**
+   * Increment PR creation retry count for a task
+   */
+  incrementPrCreationRetry(id: number): void {
+    const db = getDatabase();
+    db.prepare(`
+      UPDATE claude_code_queue
+      SET pr_creation_retry_count = pr_creation_retry_count + 1,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(id);
+    logger.info({ id }, 'Incremented PR creation retry count');
   }
 }
 
