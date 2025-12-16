@@ -137,7 +137,7 @@ export class PromptGeneratorAgent extends BaseAgent<PromptGeneratorInput, Prompt
   }
 
   private buildContext(input: AgentInput<PromptGeneratorInput>): string {
-    const { ticket, codebaseInfo, constraints, restartContext } = input.data;
+    const { ticket, codebaseInfo, constraints, restartContext, planningQAndA } = input.data;
 
     let context = `# Generate a Claude Code Prompt
 
@@ -164,6 +164,22 @@ ${ticket.description}`;
         context += `- ${title}: ${attachment.url}\n`;
       }
       context += '\nNote: Include instructions in the prompt for Claude Code to examine these attachments if they contain relevant visual information (UI mockups, error screenshots, etc.).\n';
+    }
+
+    // Add planning Q&A conversation if available
+    if (planningQAndA && planningQAndA.length > 0) {
+      context += '\n\n## Planning Discussion\n';
+      context += 'During planning mode, the following questions were asked and answered:\n\n';
+
+      // Sort by creation time
+      const sorted = [...planningQAndA].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+      for (const comment of sorted) {
+        const speaker = comment.isFromTaskAgent ? 'TaskAgent' : 'User';
+        context += `**${speaker}**: ${comment.body}\n\n`;
+      }
+
+      context += 'IMPORTANT: Include these planning decisions and user preferences in the generated prompt so Claude Code has full context of what was discussed and decided during planning.\n';
     }
 
     // Add restart context if this is a restart scenario

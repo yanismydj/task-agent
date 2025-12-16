@@ -148,6 +148,12 @@ export const PromptGeneratorInputSchema = z.object({
     })),
     summary: z.string(), // Summary of what was attempted before
   }).optional(),
+  // Optional planning Q&A conversation from planning mode
+  planningQAndA: z.array(z.object({
+    body: z.string(),
+    isFromTaskAgent: z.boolean(),
+    createdAt: z.date(),
+  })).optional(),
 });
 
 export type PromptGeneratorInput = z.infer<typeof PromptGeneratorInputSchema>;
