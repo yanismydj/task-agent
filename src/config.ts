@@ -34,6 +34,11 @@ const ConfigSchema = z.object({
     port: z.number().int().min(1).max(65535).default(4847),
     allowUnsigned: z.boolean().default(false), // Only for development - allows unsigned webhooks
     ngrokDomain: z.string().optional(), // Custom ngrok domain (e.g., "yan-od.ngrok.dev") - if set, ngrok is managed externally
+    checkboxDebounce: z.object({
+      baseMs: z.number().int().min(1000).default(3000), // Base timeout: 3 seconds
+      perQuestionMs: z.number().int().min(0).default(1000), // Add 1 second per question
+      maxMs: z.number().int().min(1000).default(30000), // Max timeout: 30 seconds
+    }),
   }),
   isDevelopment: z.boolean().default(false),
   github: z.object({
@@ -104,6 +109,11 @@ function loadConfig(): Config {
       port: parseInt(process.env['WEBHOOK_PORT'] || '4847', 10),
       allowUnsigned: process.env['WEBHOOK_ALLOW_UNSIGNED'] === 'true',
       ngrokDomain: process.env['NGROK_CUSTOM_DOMAIN'] || undefined,
+      checkboxDebounce: {
+        baseMs: parseInt(process.env['WEBHOOK_CHECKBOX_DEBOUNCE_BASE_MS'] || '3000', 10),
+        perQuestionMs: parseInt(process.env['WEBHOOK_CHECKBOX_DEBOUNCE_PER_QUESTION_MS'] || '1000', 10),
+        maxMs: parseInt(process.env['WEBHOOK_CHECKBOX_DEBOUNCE_MAX_MS'] || '30000', 10),
+      },
     },
     isDevelopment: process.env['NODE_ENV'] !== 'production',
     github: {
