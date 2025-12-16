@@ -732,6 +732,9 @@ export class QueueProcessor {
       url: a.url,
     }));
 
+    // Collect planning Q&A if available
+    const planningQAndA = await this.collectPlanningQAndA(task.ticketId);
+
     // Generate the prompt
     const promptInput: AgentInput<PromptGeneratorInput> = {
       ticketId: task.ticketId,
@@ -748,6 +751,7 @@ export class QueueProcessor {
           branchNaming: `task-agent/${ticket.identifier.toLowerCase()}`,
         },
         restartContext, // Will be undefined if not a restart
+        planningQAndA: planningQAndA.length > 0 ? planningQAndA : undefined,
       },
       context: { updatedAt: ticket.updatedAt },
     };
@@ -1714,6 +1718,66 @@ ${ticket.description || ''}`;
         { ticketId: ticketIdentifier, error: error instanceof Error ? error.message : String(error) },
         'Error while trying to attach plan file (non-fatal)'
       );
+    }
+  }
+
+  /**
+   * Collect planning Q&A from ticket comments.
+   * Returns all question and answer comments from planning mode discussion.
+   * This includes both TaskAgent questions (with emoji markers) and user responses.
+   */
+  private async collectPlanningQAndA(
+    ticketId: string
+  ): Promise<Array<{ body: string; isFromTaskAgent: boolean; createdAt: Date }>> {
+    try {
+      const comments = await linearClient.getCommentsCached(ticketId);
+
+      // Find all question comments (with emoji markers: ❗, ❓, 💭)
+      const questionComments = comments.filter(
+        (c) => isTaskAgentComment(c.user) && (
+          c.body.includes('❗') || c.body.includes('❓') || c.body.includes('💭')
+        )
+      );
+
+      if (questionComments.length === 0) {
+        return [];
+      }
+
+      // Get the timestamp of the first question
+      const firstQuestionTime = questionComments[0]?.createdAt;
+      if (!firstQuestionTime) {
+        return [];
+      }
+
+      // Collect all comments from the planning discussion:
+      // - All question comments (TaskAgent)
+      // - All human comments after the first question (user responses)
+      // - All TaskAgent comments with checked checkboxes (answered questions)
+      const planningComments = comments.filter(c => {
+        const isQuestion = isTaskAgentComment(c.user) && (
+          c.body.includes('❗') || c.body.includes('❓') || c.body.includes('💭')
+        );
+        const isHumanResponse = !isTaskAgentComment(c.user) && c.createdAt >= firstQuestionTime;
+
+        return isQuestion || isHumanResponse;
+      }).map(c => ({
+        body: c.body,
+        isFromTaskAgent: isTaskAgentComment(c.user),
+        createdAt: c.createdAt,
+      }));
+
+      logger.debug(
+        { ticketId, commentCount: planningComments.length },
+        'Collected planning Q&A comments'
+      );
+
+      return planningComments;
+    } catch (error) {
+      logger.warn(
+        { ticketId, error: error instanceof Error ? error.message : String(error) },
+        'Failed to collect planning Q&A (non-fatal)'
+      );
+      return [];
     }
   }
 }
