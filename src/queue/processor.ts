@@ -1158,7 +1158,9 @@ ${ticket.description || ''}`;
 
       await linearClient.addComment(
         task.ticketId,
-        '✅ Planning complete! Please answer the questions above, then use `@taskAgent work` to start implementation.'
+        '✅ Planning questions posted! Please answer the questions above by checking the boxes.\n\n' +
+        '**When you\'re done answering all questions**, post a comment with `/done` to consolidate the plan.\n\n' +
+        'Note: Unanswered questions will be treated as skipped.'
       );
 
       this.callbacks.onStateChange?.(task.ticketId, 'awaiting_planning_response');
@@ -1255,6 +1257,30 @@ ${ticket.description || ''}`;
       return;
     }
 
+    // Analyze which questions were answered vs skipped
+    const planningQuestions = comments.filter(
+      (c) => isTaskAgentComment(c.user) && c.body.includes('Planning Question')
+    );
+    const questionsWithCheckboxes = planningQuestions.filter(
+      (c) => c.body.includes('- [') // Has checkbox format
+    );
+    const answeredQuestions = questionsWithCheckboxes.filter(
+      (c) => c.body.includes('[X]') || c.body.includes('[x]')
+    );
+    const unansweredQuestions = questionsWithCheckboxes.filter(
+      (c) => !c.body.includes('[X]') && !c.body.includes('[x]')
+    );
+
+    logger.info(
+      {
+        ticketId: task.ticketIdentifier,
+        totalQuestions: questionsWithCheckboxes.length,
+        answeredCount: answeredQuestions.length,
+        skippedCount: unansweredQuestions.length,
+      },
+      'Question response analysis complete'
+    );
+
     // Update the ticket description with the consolidated plan
     // Prepend the plan to the original description
     const updatedDescription = `# Implementation Plan
@@ -1269,11 +1295,22 @@ ${ticket.description || ''}`;
 
     await linearClient.updateDescription(task.ticketId, updatedDescription);
 
-    // Post confirmation comment
-    await linearClient.addComment(
-      task.ticketId,
-      `✅ Planning complete! I've consolidated our discussion into an implementation plan and updated the ticket description.\n\nYou can now use \`@taskAgent work\` to start implementation.`
-    );
+    // Post confirmation comment with question statistics
+    let confirmationMessage = `✅ Planning complete! I've consolidated our discussion into an implementation plan and updated the ticket description.\n\n`;
+
+    if (questionsWithCheckboxes.length > 0) {
+      confirmationMessage += `**Question Summary:**\n`;
+      confirmationMessage += `- Answered: ${answeredQuestions.length}/${questionsWithCheckboxes.length}\n`;
+
+      if (unansweredQuestions.length > 0) {
+        confirmationMessage += `- Skipped: ${unansweredQuestions.length}\n\n`;
+        confirmationMessage += `Note: Unanswered questions were treated as skipped and the plan proceeds without those answers.\n\n`;
+      }
+    }
+
+    confirmationMessage += `You can now use \`@taskAgent work\` to start implementation.`;
+
+    await linearClient.addComment(task.ticketId, confirmationMessage);
 
     // Clear awaiting response state
     queueScheduler.clearAwaitingResponse(task.ticketId);

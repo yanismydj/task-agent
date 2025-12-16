@@ -32,13 +32,68 @@ function isCommentFromTaskAgent(userId?: string): boolean {
 // Using 4 seconds gives us a 1 second buffer
 const WEBHOOK_TIMEOUT_MS = 4000;
 
-// Debounce delay for checkbox changes - wait this long after the last checkbox change
-// before triggering re-evaluation. This gives users time to answer multiple questions.
-const CHECKBOX_DEBOUNCE_MS = 5 * 1000; // 5 seconds
-
 // Track pending checkbox debounce timers per ticket
 const checkboxDebounceTimers = new Map<string, NodeJS.Timeout>();
 const lastCheckboxChange = new Map<string, Date>();
+
+// Track question count per ticket for dynamic debounce calculation
+const questionCountCache = new Map<string, number>();
+
+// Track completion signals per ticket
+const completionSignalReceived = new Map<string, boolean>();
+
+/**
+ * Calculate dynamic debounce timeout based on number of questions
+ * Formula: baseMs + (questionCount * perQuestionMs), capped at maxMs
+ */
+function calculateDebounceTimeout(questionCount: number): number {
+  const { baseMs, perQuestionMs, maxMs } = config.webhook.checkboxDebounce;
+  const calculated = baseMs + (questionCount * perQuestionMs);
+  return Math.min(calculated, maxMs);
+}
+
+/**
+ * Count the number of planning questions in comments
+ */
+function countPlanningQuestions(issueId: string): number {
+  const cachedCount = questionCountCache.get(issueId);
+  if (cachedCount !== undefined) {
+    return cachedCount;
+  }
+
+  const comments = linearCache.getComments(issueId);
+  const count = comments.filter(
+    (c) => isCommentFromTaskAgent(c.user?.id) && c.body.includes('Planning Question')
+  ).length;
+
+  questionCountCache.set(issueId, count);
+  return count;
+}
+
+/**
+ * Check if a comment contains a completion signal
+ * Completion signals: /done, "done answering", "finished answering", etc.
+ */
+function isCompletionSignal(commentBody: string): boolean {
+  const lowerBody = commentBody.toLowerCase().trim();
+
+  // Check for explicit completion commands
+  if (lowerBody === '/done' || lowerBody === 'done') {
+    return true;
+  }
+
+  // Check for natural language completion signals
+  const completionPhrases = [
+    'done answering',
+    'finished answering',
+    'completed answering',
+    'all done',
+    "i'm done",
+    'im done',
+  ];
+
+  return completionPhrases.some(phrase => lowerBody.includes(phrase));
+}
 
 /**
  * Execute a handler with a timeout to ensure we respond to Linear within 5 seconds
@@ -215,35 +270,61 @@ async function handleCommentCreate(data: WebhookCommentData): Promise<void> {
   const mention = parseMention(data.body);
 
   if (!mention.found) {
-    // Check if this is a response to planning questions
-    // If the issue is awaiting a 'questions' response and has planning questions,
-    // trigger plan consolidation
-    if (queueScheduler.isAwaitingResponse(issueId)) {
-      const awaitingType = queueScheduler.getAwaitingResponseType(issueId);
-      if (awaitingType === 'questions') {
-        // Check if there are planning questions in the cache
-        const cachedTicket = linearCache.getTicket(issueId);
-        if (cachedTicket) {
+    // Check if this is a completion signal for planning questions
+    if (isCompletionSignal(data.body)) {
+      logger.info(
+        { issueId, commentBody: data.body.substring(0, 50) },
+        'Detected completion signal for planning questions'
+      );
+
+      // Mark completion signal as received
+      completionSignalReceived.set(issueId, true);
+
+      // Check if there are planning questions in the cache
+      const cachedTicket = linearCache.getTicket(issueId);
+      if (cachedTicket && queueScheduler.isAwaitingResponse(issueId)) {
+        const awaitingType = queueScheduler.getAwaitingResponseType(issueId);
+        if (awaitingType === 'questions') {
           const cachedComments = linearCache.getComments(issueId);
           const hasPlanningQuestions = cachedComments.some(
-            (c) => c.body?.includes('Planning Question')
+            (c) => isCommentFromTaskAgent(c.user?.id) && c.body.includes('Planning Question')
           );
 
           if (hasPlanningQuestions) {
             logger.info(
               { issueId, ticketId: cachedTicket.identifier },
-              'Detected response to planning questions - triggering plan consolidation'
+              'Completion signal received - triggering plan consolidation immediately'
             );
+
+            // Clear any pending debounce timer
+            const existingTimer = checkboxDebounceTimers.get(issueId);
+            if (existingTimer) {
+              clearTimeout(existingTimer);
+              checkboxDebounceTimers.delete(issueId);
+              logger.debug({ issueId }, 'Cleared pending debounce timer due to completion signal');
+            }
 
             // Clear awaiting state
             queueScheduler.clearAwaitingResponse(issueId);
+
+            // Clean up caches
+            questionCountCache.delete(issueId);
+            completionSignalReceived.delete(issueId);
+
+            // Delete the completion signal comment to keep the ticket clean
+            try {
+              await linearClient.deleteComment(data.id);
+              logger.debug({ commentId: data.id }, 'Deleted completion signal comment');
+            } catch (error) {
+              logger.error({ commentId: data.id, error: error instanceof Error ? error.message : error }, 'Failed to delete completion signal comment');
+            }
 
             // Enqueue plan consolidation task
             linearQueue.enqueue({
               ticketId: issueId,
               ticketIdentifier: cachedTicket.identifier,
               taskType: 'consolidate_plan',
-              priority: 1, // High priority - human just responded
+              priority: 1, // High priority - human just signaled completion
             });
 
             return;
@@ -345,8 +426,12 @@ async function handleCommentUpdate(data: WebhookCommentData): Promise<void> {
     if (hasCheckedBoxes) {
       const issueId = data.issueId;
 
+      // Check if this is for planning questions
+      const awaitingType = queueScheduler.getAwaitingResponseType(issueId);
+      const isAwaitingPlanningQuestions = awaitingType === 'questions';
+
       logger.info(
-        { issueId, commentId: data.id },
+        { issueId, commentId: data.id, isAwaitingPlanningQuestions },
         'User checked checkbox in TaskAgent question - debouncing before re-evaluation'
       );
 
@@ -360,11 +445,66 @@ async function handleCommentUpdate(data: WebhookCommentData): Promise<void> {
         logger.debug({ issueId }, 'Cleared existing checkbox debounce timer');
       }
 
+      // Calculate dynamic debounce timeout based on question count
+      let debounceMs: number;
+      if (isAwaitingPlanningQuestions) {
+        const questionCount = countPlanningQuestions(issueId);
+        debounceMs = calculateDebounceTimeout(questionCount);
+        logger.debug(
+          { issueId, questionCount, debounceMs },
+          'Using dynamic debounce timeout for planning questions'
+        );
+      } else {
+        // For regular clarification questions, use base timeout
+        debounceMs = config.webhook.checkboxDebounce.baseMs;
+      }
+
       // Set a new debounce timer - only trigger after user stops checking boxes
       // This gives users time to answer multiple questions before we re-evaluate
+      // For planning questions, wait for explicit completion signal
       const timer = setTimeout(() => {
         checkboxDebounceTimers.delete(issueId);
 
+        // For planning questions, check if we received a completion signal
+        if (isAwaitingPlanningQuestions) {
+          const hasCompletionSignal = completionSignalReceived.get(issueId);
+          if (!hasCompletionSignal) {
+            logger.info(
+              { issueId },
+              'Checkbox debounce timer fired for planning questions, but no completion signal received - waiting for /done'
+            );
+            // Don't trigger consolidation - wait for explicit completion signal
+            return;
+          }
+
+          logger.info(
+            { issueId },
+            'Checkbox debounce timer fired with completion signal - triggering plan consolidation'
+          );
+
+          // Clear awaiting state
+          queueScheduler.clearAwaitingResponse(issueId);
+
+          // Clean up caches
+          questionCountCache.delete(issueId);
+          completionSignalReceived.delete(issueId);
+
+          // Enqueue plan consolidation task
+          const cachedTicket = linearCache.getTicket(issueId);
+          const ticketIdentifier = cachedTicket?.identifier || `ticket-${issueId}`;
+
+          linearQueue.enqueue({
+            ticketId: issueId,
+            ticketIdentifier,
+            taskType: 'consolidate_plan',
+            priority: 1, // High priority - human just completed answering
+          });
+
+          logger.info({ issueId, ticketIdentifier }, 'Enqueued plan consolidation from checkbox update (after debounce + completion signal)');
+          return;
+        }
+
+        // Regular clarification flow (not planning questions)
         logger.info({ issueId }, 'Checkbox debounce timer fired - triggering re-evaluation');
 
         // Clear awaiting response state
@@ -390,10 +530,10 @@ async function handleCommentUpdate(data: WebhookCommentData): Promise<void> {
         });
 
         logger.info({ issueId, ticketIdentifier }, 'Enqueued refine from checkbox update (after debounce)');
-      }, CHECKBOX_DEBOUNCE_MS);
+      }, debounceMs);
 
       checkboxDebounceTimers.set(issueId, timer);
-      logger.debug({ issueId, debounceMs: CHECKBOX_DEBOUNCE_MS }, 'Set checkbox debounce timer');
+      logger.debug({ issueId, debounceMs }, 'Set checkbox debounce timer');
 
       return;
     }
