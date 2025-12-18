@@ -241,6 +241,35 @@ Generate a comprehensive prompt for Claude Code that will help it successfully i
   private enhancePrompt(result: PromptGeneratorOutput, input: AgentInput<PromptGeneratorInput>): PromptGeneratorOutput {
     const { ticket, constraints } = input.data;
 
+    // Build the PR description template with conditional sections
+    let prBodyTemplate = `## Summary
+[Brief description of the changes made]
+
+## Implementation Approach
+[Describe the technical decisions and implementation strategy used]`;
+
+    // Conditionally add Complexity & Analysis section
+    const shouldIncludeComplexity = result.estimatedComplexity !== 'simple' || result.warnings.length > 0;
+    if (shouldIncludeComplexity) {
+      prBodyTemplate += '\n\n## Complexity & Analysis';
+
+      if (result.estimatedComplexity !== 'simple') {
+        prBodyTemplate += `\n**Estimated Complexity**: ${result.estimatedComplexity}`;
+      }
+
+      if (result.warnings.length > 0) {
+        prBodyTemplate += '\n\n**Analysis Warnings**:';
+        for (const warning of result.warnings) {
+          prBodyTemplate += `\n- ${warning}`;
+        }
+      }
+    }
+
+    prBodyTemplate += `
+
+## Related Linear Ticket
+${ticket.url}`;
+
     // Add standard instructions to the prompt
     const standardInstructions = `
 IMPORTANT INSTRUCTIONS:
@@ -250,13 +279,10 @@ IMPORTANT INSTRUCTIONS:
 4. Commit your changes with a clear message referencing ${ticket.identifier}
 5. Create a pull request with:
    - Title: "<brief description>"
-   - Body: Summary of changes and link to the ticket
-   - IMPORTANT: Include the Linear ticket link in the PR body:
+   - Body: Use the following template and fill in the relevant sections:
 
-     ## Related Linear Ticket
-     ${ticket.url}
+${prBodyTemplate.split('\n').map(line => '     ' + line).join('\n')}
 
-     This ensures the PR is properly linked to the Linear ticket.
 6. Branch name should follow pattern: ${constraints.branchNaming}
 
 STRICT CONSTRAINTS:
